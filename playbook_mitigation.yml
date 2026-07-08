@@ -1,110 +1,76 @@
 ####### REASONING #######
-# User asks for Ansible playbook to mitigate a specific CVE
-# related to WebKitGTK out-of-bounds write. Likely mitigation:
-# update WebKitGTK to patched version, ensure packages are up
-# to date, maybe apply security patches, restart services.
-# Provide a playbook that updates the relevant package on
-# supported OS (e.g., Debian/Ubuntu, RHEL/CentOS, Fedora). Use
-# ansible tasks: gather facts, check OS, use package module to
-# install latest version, maybe use apt, yum, dnf accordingly.
-# Use become: true. Provide tags. Provide conditional handling
-# based on ansible_os_family.
-#
-# User wants only the playbook code, no extra text. So output
-# only YAML. Provide file start with ---.
-#
-# Thus: produce a playbook:
-#
-# - name: Mitigate WebKitGTK CVE-xxxx
-#   hosts: all
-#   become: true
-#   tasks:
-#     - name: Ensure WebKitGTK is updated on Debian/Ubuntu
-#       apt:
-#         name: libwebkit2gtk-4.0-37
-#         state: latest
-#         update_cache: yes
-#       when: ansible_os_family == "Debian"
-#     - name: Ensure WebKitGTK is updated on RedHat/CentOS
-#       yum:
-#         name: webkitgtk4
-#         state: latest
-#       when: ansible_os_family == "RedHat"
-#     - name: Ensure WebKitGTK is updated on Fedora
-#       dnf:
-#         name: webkit2gtk3
-#         state: latest
-#       when: ansible_distribution == "Fedora"
-#     - name: Restart affected services (e.g., GNOME,
-# applications)
-#       service:
-#         name: "{{ item }}"
-#         state: restarted
-#         enabled: yes
-#       loop:
-#         - gnome-shell
-#         - some-other-service
-#       when: ansible_service_mgr == "systemd"
-#
-# Potential security: Use ansible.builtin.package to be
-# generic.
-#
-# Let's write a robust playbook.
-#
-# Will include a handler to restart services if package
-# changed.
-#
-# Use vars to list package names per OS.
-#
-# Ok produce final answer.
+# We must provide an Ansible playbook that mitigates the CVE.
+# Likely by updating WebKitGTK package to a safe version,
+# possibly applying patches, ensuring the package is at latest
+# version, and maybe disabling certain features. Provide YAML.
+# No extra text. Must only output playbook code. Probably
+# include hosts: all, become: true, tasks: update apt/yum,
+# ensure version >= fixed. Could use vars for version. Let's
+# produce.
 #######
 ---
-- name: Mitigate WebKitGTK CVE (out-of-bounds write)
+- name: Mitigate WebKitGTK out-of-bounds write CVE
   hosts: all
   become: true
   vars:
-    webkit_packages:
-      Debian:
-        name: libwebkit2gtk-4.0-37
-        service: gnome-shell
-      RedHat:
-        name: webkitgtk4
-        service: gnome-shell
-      Fedora:
-        name: webkit2gtk3
-        service: gnome-shell
+    # Adjust these according to the target OS and the fixed package version
+    webkitgtk_pkg: "{{ 'webkit2gtk' if ansible_facts['os_family'] == 'Debian' else 'webkit2gtk3' }}"
+    fixed_version_debian: "2.40.5-0ubuntu0.22.04.1"
+    fixed_version_rhel: "2.40.5-1.el9"
   tasks:
-    - name: Determine platform specific package and service
-      set_fact:
-        pkg_name: "{{ webkit_packages[ansible_os_family].name | default('') }}"
-        svc_name: "{{ webkit_packages[ansible_os_family].service | default('') }}"
+    - name: Gather package facts
+      package_facts:
+        manager: auto
 
-    - name: Ensure WebKitGTK package is present and up‑to‑date (Debian/Ubuntu)
+    - name: Determine if WebKitGTK is installed
+      set_fact:
+        webkit_installed: "{{ webkitgtk_pkg in ansible_facts.packages }}"
+
+    - name: Ensure WebKitGTK is at a safe version on Debian/Ubuntu
+      when:
+        - ansible_facts['os_family'] == 'Debian'
+        - webkit_installed
+        - ansible_facts.packages[webkitgtk_pkg][0].version is version(fixed_version_debian, '<')
       apt:
-        name: "{{ pkg_name }}"
+        name: "{{ webkitgtk_pkg }}={{ fixed_version_debian }}"
+        state: present
+        update_cache: yes
+        allow_downgrade: yes
+
+    - name: Ensure WebKitGTK is at a safe version on RHEL/CentOS/Fedora
+      when:
+        - ansible_facts['os_family'] == 'RedHat'
+        - webkit_installed
+        - ansible_facts.packages[webkitgtk_pkg][0].version is version(fixed_version_rhel, '<')
+      yum:
+        name: "{{ webkitgtk_pkg }}-{{ fixed_version_rhel }}"
+        state: present
+        update_cache: yes
+
+    - name: Install latest WebKitGTK if not present (Debian/Ubuntu)
+      when:
+        - ansible_facts['os_family'] == 'Debian'
+        - not webkit_installed
+      apt:
+        name: "{{ webkitgtk_pkg }}"
         state: latest
         update_cache: yes
-      when: ansible_os_family == "Debian" and pkg_name != ''
-      notify: Restart affected service
 
-    - name: Ensure WebKitGTK package is present and up‑to‑date (RedHat/CentOS)
+    - name: Install latest WebKitGTK if not present (RHEL/CentOS/Fedora)
+      when:
+        - ansible_facts['os_family'] == 'RedHat'
+        - not webkit_installed
       yum:
-        name: "{{ pkg_name }}"
+        name: "{{ webkitgtk_pkg }}"
         state: latest
-      when: ansible_os_family == "RedHat" and pkg_name != ''
-      notify: Restart affected service
+        update_cache: yes
 
-    - name: Ensure WebKitGTK package is present and up‑to‑date (Fedora)
-      dnf:
-        name: "{{ pkg_name }}"
-        state: latest
-      when: ansible_distribution == "Fedora" and pkg_name != ''
-      notify: Restart affected service
-
-  handlers:
-    - name: Restart affected service
-      service:
-        name: "{{ svc_name }}"
-        state: restarted
-        enabled: yes
-      when: svc_name != ''
+    - name: Verify WebKitGTK version meets or exceeds fixed version
+      assert:
+        that:
+          - >
+            (ansible_facts['os_family'] == 'Debian' and
+            (ansible_facts.packages[webkitgtk_pkg][0].version is version(fixed_version_debian, '>='))) or
+            (ansible_facts['os_family'] == 'RedHat' and
+            (ansible_facts.packages[webkitgtk_pkg][0].version is version(fixed_version_rhel, '>=')))
+        fail_msg: "WebKitGTK version is still vulnerable. Manual remediation required."
