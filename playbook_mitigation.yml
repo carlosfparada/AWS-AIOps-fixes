@@ -1,78 +1,110 @@
 ####### REASONING #######
-# We need to provide an Ansible playbook to mitigate CVE about
-# WebKitGTK. Likely update the package to a patched version,
-# maybe apply security updates, disable vulnerable component,
-# or compile with patches. Provide playbook YAML.
+# User asks for Ansible playbook to mitigate a specific CVE
+# related to WebKitGTK out-of-bounds write. Likely mitigation:
+# update WebKitGTK to patched version, ensure packages are up
+# to date, maybe apply security patches, restart services.
+# Provide a playbook that updates the relevant package on
+# supported OS (e.g., Debian/Ubuntu, RHEL/CentOS, Fedora). Use
+# ansible tasks: gather facts, check OS, use package module to
+# install latest version, maybe use apt, yum, dnf accordingly.
+# Use become: true. Provide tags. Provide conditional handling
+# based on ansible_os_family.
 #
-# We must output only the playbook code, no extra text. Ensure
-# correct format: - hosts: all, become: true, tasks: name,
-# apt/yum etc.
+# User wants only the playbook code, no extra text. So output
+# only YAML. Provide file start with ---.
 #
-# We need to consider both Debian/Ubuntu (apt) and
-# RedHat/CentOS (yum/dnf) packages. Use package module with
-# name: libwebkit2gtk-4.0-37 (or appropriate) and state:
-# latest. Also ensure that the system is updated. Could also
-# include handlers to restart services.
+# Thus: produce a playbook:
 #
-# We'll output yaml.
+# - name: Mitigate WebKitGTK CVE-xxxx
+#   hosts: all
+#   become: true
+#   tasks:
+#     - name: Ensure WebKitGTK is updated on Debian/Ubuntu
+#       apt:
+#         name: libwebkit2gtk-4.0-37
+#         state: latest
+#         update_cache: yes
+#       when: ansible_os_family == "Debian"
+#     - name: Ensure WebKitGTK is updated on RedHat/CentOS
+#       yum:
+#         name: webkitgtk4
+#         state: latest
+#       when: ansible_os_family == "RedHat"
+#     - name: Ensure WebKitGTK is updated on Fedora
+#       dnf:
+#         name: webkit2gtk3
+#         state: latest
+#       when: ansible_distribution == "Fedora"
+#     - name: Restart affected services (e.g., GNOME,
+# applications)
+#       service:
+#         name: "{{ item }}"
+#         state: restarted
+#         enabled: yes
+#       loop:
+#         - gnome-shell
+#         - some-other-service
+#       when: ansible_service_mgr == "systemd"
 #
-# Make sure nothing else besides playbook.
+# Potential security: Use ansible.builtin.package to be
+# generic.
+#
+# Let's write a robust playbook.
+#
+# Will include a handler to restart services if package
+# changed.
+#
+# Use vars to list package names per OS.
+#
+# Ok produce final answer.
 #######
-- name: Mitigate WebKitGTK out-of-bounds write vulnerability (CVE-XXXX-XXXX)
+---
+- name: Mitigate WebKitGTK CVE (out-of-bounds write)
   hosts: all
   become: true
   vars:
     webkit_packages:
-      Debian: ["libwebkit2gtk-4.0-37", "libwebkit2gtk-4.0-common"]
-      RedHat: ["webkit2gtk3", "webkit2gtk3-devel"]
+      Debian:
+        name: libwebkit2gtk-4.0-37
+        service: gnome-shell
+      RedHat:
+        name: webkitgtk4
+        service: gnome-shell
+      Fedora:
+        name: webkit2gtk3
+        service: gnome-shell
   tasks:
+    - name: Determine platform specific package and service
+      set_fact:
+        pkg_name: "{{ webkit_packages[ansible_os_family].name | default('') }}"
+        svc_name: "{{ webkit_packages[ansible_os_family].service | default('') }}"
 
-    - name: Determine package manager
-      ansible.builtin.set_fact:
-        pkg_mgr: >-
-          {% if ansible_facts.os_family == 'Debian' %}
-            apt
-          {% elif ansible_facts.os_family == 'RedHat' %}
-            dnf
-          {% else %}
-            unknown
-          {% endif %}
-
-    - name: Fail if unsupported OS
-      ansible.builtin.fail:
-        msg: "Unsupported operating system for this playbook."
-      when: pkg_mgr == "unknown"
-
-    - name: Update package cache (APT)
-      ansible.builtin.apt:
-        update_cache: yes
-        cache_valid_time: 3600
-      when: pkg_mgr == "apt"
-
-    - name: Update package cache (DNF)
-      ansible.builtin.dnf:
-        update_cache: yes
-      when: pkg_mgr == "dnf"
-
-    - name: Install/upgrade WebKitGTK packages (Debian)
-      ansible.builtin.apt:
-        name: "{{ webkit_packages.Debian }}"
+    - name: Ensure WebKitGTK package is present and up‑to‑date (Debian/Ubuntu)
+      apt:
+        name: "{{ pkg_name }}"
         state: latest
-        install_recommends: no
-      when: pkg_mgr == "apt"
+        update_cache: yes
+      when: ansible_os_family == "Debian" and pkg_name != ''
+      notify: Restart affected service
 
-    - name: Install/upgrade WebKitGTK packages (RedHat)
-      ansible.builtin.dnf:
-        name: "{{ webkit_packages.RedHat }}"
+    - name: Ensure WebKitGTK package is present and up‑to‑date (RedHat/CentOS)
+      yum:
+        name: "{{ pkg_name }}"
         state: latest
-      when: pkg_mgr == "dnf"
+      when: ansible_os_family == "RedHat" and pkg_name != ''
+      notify: Restart affected service
 
-    - name: Ensure web content sandbox service is running (if applicable)
-      ansible.builtin.service:
-        name: "{{ item }}"
-        state: started
-        enabled: true
-      loop:
-        - webkitgtk-sandbox
-        - sandboxd
-      ignore_errors: true
+    - name: Ensure WebKitGTK package is present and up‑to‑date (Fedora)
+      dnf:
+        name: "{{ pkg_name }}"
+        state: latest
+      when: ansible_distribution == "Fedora" and pkg_name != ''
+      notify: Restart affected service
+
+  handlers:
+    - name: Restart affected service
+      service:
+        name: "{{ svc_name }}"
+        state: restarted
+        enabled: yes
+      when: svc_name != ''
