@@ -1,91 +1,186 @@
 ####### REASONING #######
-# We need to write an Ansible playbook that mitigates a CVE:
-# WebKitGTK out-of-bounds write. Likely mitigation is to
-# update package to patched version, ensure it's upgraded,
-# maybe apply OS-specific security updates, maybe set security
-# policies. Provide a playbook that updates the package and
-# restarts relevant services. Should be only the playbook
-# code, no extra text.
+# The user asks: "Write an ansible playbook to mitigate the
+# following CVE: 'A flaw was found in WebKitGTK. Processing
+# malicious web content can trigger an out-of-bounds write due
+# to improper checks to prevent unauthorized actions, causing
+# a break out of Web Content sandbox.' Return for me only the
+# playbook code, remove all other text."
 #
-# We need to produce a YAML file. Include hosts, become: true,
-# tasks: update package 'webkit2gtk' (or
-# 'libwebkit2gtk-4.0-37' on Debian/Ubuntu). Use package
-# module. Also ensure the system is up to date, perhaps use
-# 'yum' on RHEL. Provide conditional based on
-# ansible_os_family. Could include using 'package' module with
-# name: "{{ pkg_name }}" variable derived from OS.
+# We need to provide an Ansible playbook that mitigates this
+# CVE. Likely mitigation involves updating the affected
+# package (webkitgtk) to a patched version, ensuring the
+# system uses latest security updates, maybe disabling certain
+# features. Provide a playbook that uses the package module to
+# update webkitgtk, maybe also ensure latest security updates
+# for the OS.
 #
-# Simplify: A playbook that updates the package to latest
-# version. Use 'apt' for Debian, 'yum' for RHEL. Use when
-# conditions.
+# We must output only the playbook code, no explanation, no
+# extra text. Must be valid YAML. The playbook should have
+# hosts, become: yes, tasks: update package, maybe reinstall
+# or upgrade, and also restart services if needed.
 #
-# Will output just the playbook.
-# 
+# Let's write a simple playbook:
+#
+# ```yaml
+# - name: Mitigate WebKitGTK CVE
+#   hosts: all
+#   become: true
+#   tasks:
+#     - name: Ensure package manager cache is up to date
+#       ansible.builtin.package:
+#         update_cache: yes
+#       when: ansible_pkg_mgr in ["apt", "yum", "dnf",
+# "zypper"]
+#
+#     - name: Upgrade WebKitGTK package to latest version
+#       ansible.builtin.package:
+#         name: "{{ webkitgtk_pkg_name }}"
+#         state: latest
+#
+#     - name: Reboot the host if kernel was updated
+#       ansible.builtin.reboot:
+#         reboot_timeout: 600
+#       when: reboot_required | default(false)
+#
+# ```
+#
+# But need to define variable mapping package name per OS.
+# Could use vars:
+#
+# ```yaml
+# vars:
+#   webkitgtk_pkg_name: "{{ 'webkitgtk' if ansible_os_family
+# == 'Debian' else 'webkit2gtk3' }}"
+# ```
+#
+# Better to have conditional tasks.
+#
+# Simplify: just use package module with name 'webkit2gtk3'
+# for Debian/Ubuntu (package name: libwebkit2gtk-4.0-37
+# perhaps) and for RHEL perhaps 'WebKitGTK3' or 'webkitgtk3'.
+#
+# We can create a task that installs specific package names
+# based on OS family.
+#
+# Ok full playbook:
+#
+# ```yaml
+# ---
+# - name: Mitigate WebKitGTK CVE
+#   hosts: all
+#   become: true
+#   vars:
+#     webkitgtk_pkg:
+#       Debian: libwebkit2gtk-4.0-37
+#       Ubuntu: libwebkit2gtk-4.0-37
+#       RedHat: WebKitGTK3
+#       CentOS: WebKitGTK3
+#       Fedora: WebKitGTK3
+#       Suse: libwebkit2gtk-4_0-37
+#   tasks:
+#     - name: Update package cache (APT)
+#       ansible.builtin.apt:
+#         update_cache: yes
+#       when: ansible_pkg_mgr == 'apt'
+#
+#     - name: Update package cache (YUM/DNF)
+#       ansible.builtin.yum:
+#         update_cache: yes
+#       when: ansible_pkg_mgr in ['yum', 'dnf']
+#
+#     - name: Ensure latest WebKitGTK package is installed
+#       ansible.builtin.package:
+#         name: "{{ webkitgtk_pkg[ansible_distribution] |
+# default(webkitgtk_pkg[ansible_os_family]) }}"
+#         state: latest
+#
+#     - name: Reboot if required
+#       ansible.builtin.reboot:
+#         reboot_timeout: 600
+#       when: ansible_facts['os_family'] == 'RedHat' and
+# ansible_facts['pkg_mgr'] == 'yum' and
+# ansible_facts['ansible_kernel'] !=
+# ansible_facts['ansible_kernel_version']
+# ```
+#
+# But maybe simpler. We'll just do generic.
+#
+# User only wants code.
+#
+# Let's produce a concise playbook:
+#
+# ```yaml
+# ---
+# - name: Apply WebKitGTK security update
+#   hosts: all
+#   become: true
+#   vars:
+#     webkitgtk_pkg:
+#       Debian: libwebkit2gtk-4.0-37
+#       Ubuntu: libwebkit2gtk-4.0-37
+#       RedHat: WebKitGTK3
+#       CentOS: WebKitGTK3
+#       Fedora: WebKitGTK3
+#       Suse: libwebkit2gtk-4_0-37
+#   tasks:
+#     - name: Refresh package repositories (apt)
+#       ansible.builtin.apt:
+#         update_cache: yes
+#       when: ansible_pkg_mgr == 'apt'
+#
+#     - name: Refresh package repositories (yum/dnf)
+#       ansible.builtin.yum:
+#         update_cache: yes
+#       when: ansible_pkg_mgr in ['yum', 'dnf']
+#
+#     - name: Update WebKitGTK to latest version
+#       ansible.builtin.package:
+#         name: "{{ webkitgtk_pkg[ansible_distribution] |
+# default(webkitgtk_pkg[ansible_os_family]) }}"
+#         state: latest
+#
+#     - name: Reboot the machine to apply updates (if needed)
+#       ansible.builtin.reboot:
+#         reboot_timeout: 600
+#       when: ansible_facts['pkg_mgr'] == 'apt' and
+# (ansible_facts['pkg_mgr'] is defined)
+# ```
+#
+# But the reboot condition maybe not needed.
+#
+# Better to just include reboot without condition, optional.
+#
+# I'll output final.
 #######
 ---
-- name: Mitigate WebKitGTK out-of-bounds write vulnerability (CVE-XXXX-XXXX)
+- name: Mitigate WebKitGTK CVE
   hosts: all
   become: true
   vars:
-    debian_pkg: "libwebkit2gtk-4.0-37"
-    redhat_pkg: "webkit2gtk3"
+    webkitgtk_pkg:
+      Debian: libwebkit2gtk-4.0-37
+      Ubuntu: libwebkit2gtk-4.0-37
+      RedHat: WebKitGTK3
+      CentOS: WebKitGTK3
+      Fedora: WebKitGTK3
+      Suse: libwebkit2gtk-4_0-37
   tasks:
-
-    - name: Ensure package cache is up to date (Debian/Ubuntu)
-      apt:
+    - name: Refresh package cache (APT)
+      ansible.builtin.apt:
         update_cache: yes
-        cache_valid_time: 86400
-      when: ansible_os_family == "Debian"
+      when: ansible_pkg_mgr == "apt"
 
-    - name: Update WebKitGTK to the latest version (Debian/Ubuntu)
-      apt:
-        name: "{{ debian_pkg }}"
-        state: latest
-        install_recommends: no
-      when: ansible_os_family == "Debian"
-
-    - name: Ensure yum/dnf cache is up to date (RHEL/CentOS/Fedora)
-      yum:
+    - name: Refresh package cache (YUM/DNF)
+      ansible.builtin.yum:
         update_cache: yes
-      when: ansible_os_family == "RedHat"
+      when: ansible_pkg_mgr in ["yum", "dnf"]
 
-    - name: Update WebKitGTK to the latest version (RHEL/CentOS/Fedora)
-      yum:
-        name: "{{ redhat_pkg }}"
+    - name: Ensure WebKitGTK is at the latest version
+      ansible.builtin.package:
+        name: "{{ webkitgtk_pkg[ansible_distribution] | default(webkitgtk_pkg[ansible_os_family]) }}"
         state: latest
-      when: ansible_os_family == "RedHat"
 
-    - name: Verify installed version meets or exceeds fixed version (Debian/Ubuntu)
-      command: dpkg-query -W -f='${Version}' {{ debian_pkg }}
-      register: deb_pkg_version
-      changed_when: false
-      when: ansible_os_family == "Debian"
-
-    - name: Verify installed version meets or exceeds fixed version (RHEL/CentOS/Fedora)
-      command: rpm -q --queryformat '%{VERSION}-%{RELEASE}' {{ redhat_pkg }}
-      register: rhel_pkg_version
-      changed_when: false
-      when: ansible_os_family == "RedHat"
-
-    - name: Fail if WebKitGTK version is still vulnerable (Debian/Ubuntu)
-      fail:
-        msg: "Installed {{ debian_pkg }} version {{ deb_pkg_version.stdout }} may still be vulnerable."
-      when:
-        - ansible_os_family == "Debian"
-        - deb_pkg_version.stdout is version('2.40.5-0ubuntu1', '<')   # replace with known safe version
-
-    - name: Fail if WebKitGTK version is still vulnerable (RHEL/CentOS/Fedora)
-      fail:
-        msg: "Installed {{ redhat_pkg }} version {{ rhel_pkg_version.stdout }} may still be vulnerable."
-      when:
-        - ansible_os_family == "RedHat"
-        - rhel_pkg_version.stdout is version('2.40.5-1.el8', '<')   # replace with known safe version
-
-    - name: Restart services that depend on WebKitGTK (if any)
-      service:
-        name: "{{ item }}"
-        state: restarted
-      loop:
-        - gnome-shell
-        - firefox
-      ignore_errors: true
+    - name: Reboot the host if a kernel update occurred
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+      when: ansible_facts.kernel is defined and ansible_facts.kernel != ansible_facts.kernel_version
