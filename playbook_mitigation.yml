@@ -1,107 +1,78 @@
 ####### REASONING #######
-# We need to produce only ansible playbook code that mitigates
-# CVE: WebKitGTK out-of-bounds write. Mitigation likely
-# involves updating package to patched version or applying
-# security updates. Provide a playbook that ensures the latest
-# version of webkit2gtk is installed, maybe from distro
-# security repo, or ensure the package is at version >=
-# patched version. Also ensure restart of services if needed.
+# We need to provide an Ansible playbook to mitigate CVE about
+# WebKitGTK. Likely update the package to a patched version,
+# maybe apply security updates, disable vulnerable component,
+# or compile with patches. Provide playbook YAML.
 #
-# We just output the YAML playbook code, nothing else.
+# We must output only the playbook code, no extra text. Ensure
+# correct format: - hosts: all, become: true, tasks: name,
+# apt/yum etc.
 #
-# Let's create a playbook with hosts: all, become: true,
-# tasks: update cache, install latest webkit2gtk package,
-# maybe check version.
+# We need to consider both Debian/Ubuntu (apt) and
+# RedHat/CentOS (yum/dnf) packages. Use package module with
+# name: libwebkit2gtk-4.0-37 (or appropriate) and state:
+# latest. Also ensure that the system is updated. Could also
+# include handlers to restart services.
 #
-# We can also use ansible.builtin.yum or apt depending on OS.
-# Could use package module generic.
+# We'll output yaml.
 #
-# Provide variable for package name.
-#
-# We'll just provide a playbook that works on both
-# Debian/Ubuntu and RHEL/CentOS using OS_family.
-#
-# Use when.
-#
-# Alright produce.
-# 
+# Make sure nothing else besides playbook.
 #######
----
-- name: Mitigate WebKitGTK CVE-2023-XXXXX (out-of-bounds write)
+- name: Mitigate WebKitGTK out-of-bounds write vulnerability (CVE-XXXX-XXXX)
   hosts: all
   become: true
   vars:
-    # Define the minimum known safe version for each platform
-    webkit_safe_versions:
-      debian: "2.40.5-0ubuntu0.22.04.1"
-      ubuntu: "2.40.5-0ubuntu0.22.04.1"
-      redhat: "2.40.5-1.el9"
-      centos: "2.40.5-1.el9"
+    webkit_packages:
+      Debian: ["libwebkit2gtk-4.0-37", "libwebkit2gtk-4.0-common"]
+      RedHat: ["webkit2gtk3", "webkit2gtk3-devel"]
   tasks:
 
-    - name: Gather OS distribution information
-      ansible.builtin.setup:
-        filter: ansible_distribution*
-      register: os_info
+    - name: Determine package manager
+      ansible.builtin.set_fact:
+        pkg_mgr: >-
+          {% if ansible_facts.os_family == 'Debian' %}
+            apt
+          {% elif ansible_facts.os_family == 'RedHat' %}
+            dnf
+          {% else %}
+            unknown
+          {% endif %}
 
-    - name: Set package name and safe version based on OS
-      set_fact:
-        webkit_pkg_name: "{{ 'libwebkit2gtk-4.0-0' if (ansible_facts['os_family'] == 'Debian') else 'webkit2gtk3' }}"
-        webkit_safe_version: >-
-          {{ webkit_safe_versions[ansible_facts['distribution']|lower] | default('') }}
+    - name: Fail if unsupported OS
+      ansible.builtin.fail:
+        msg: "Unsupported operating system for this playbook."
+      when: pkg_mgr == "unknown"
 
-    - name: Ensure the package cache is up to date (apt)
+    - name: Update package cache (APT)
       ansible.builtin.apt:
         update_cache: yes
-        cache_valid_time: 86400
-      when: ansible_facts['os_family'] == 'Debian'
+        cache_valid_time: 3600
+      when: pkg_mgr == "apt"
 
-    - name: Ensure the package cache is up to date (dnf)
+    - name: Update package cache (DNF)
       ansible.builtin.dnf:
         update_cache: yes
-      when: ansible_facts['os_family'] == 'RedHat'
+      when: pkg_mgr == "dnf"
 
-    - name: Install/Upgrade WebKitGTK to a safe version (apt)
+    - name: Install/upgrade WebKitGTK packages (Debian)
       ansible.builtin.apt:
-        name: "{{ webkit_pkg_name }}{{ ('=' + webkit_safe_version) if webkit_safe_version else '' }}"
-        state: present
-        allow_unauthenticated: no
-        upgrade: dist
-      when:
-        - ansible_facts['os_family'] == 'Debian'
-        - webkit_safe_version != ''
-
-    - name: Install/Upgrade WebKitGTK to a safe version (dnf)
-      ansible.builtin.dnf:
-        name: "{{ webkit_pkg_name }}{{ ('-' + webkit_safe_version) if webkit_safe_version else '' }}"
+        name: "{{ webkit_packages.Debian }}"
         state: latest
-      when:
-        - ansible_facts['os_family'] == 'RedHat'
-        - webkit_safe_version != ''
+        install_recommends: no
+      when: pkg_mgr == "apt"
 
-    - name: Verify installed version meets or exceeds safe version (apt)
-      ansible.builtin.command: apt-cache policy {{ webkit_pkg_name }}
-      register: apt_policy
-      changed_when: false
-      when: ansible_facts['os_family'] == 'Debian'
+    - name: Install/upgrade WebKitGTK packages (RedHat)
+      ansible.builtin.dnf:
+        name: "{{ webkit_packages.RedHat }}"
+        state: latest
+      when: pkg_mgr == "dnf"
 
-    - name: Verify installed version meets or exceeds safe version (dnf)
-      ansible.builtin.command: dnf info {{ webkit_pkg_name }}
-      register: dnf_info
-      changed_when: false
-      when: ansible_facts['os_family'] == 'RedHat'
-
-    - name: Warn if safe version could not be determined
-      ansible.builtin.debug:
-        msg: "Safe version for {{ ansible_facts['distribution'] }} is not defined; ensure the package is patched via your vendor."
-      when: webkit_safe_version == ''
-
-    - name: Reboot the host if a kernel or critical library update was applied
-      ansible.builtin.reboot:
-        reboot_timeout: 600
-      when: >
-        (apt_policy.stdout is defined and 'installed' in apt_policy.stdout and 
-         ('{{ webkit_safe_version }}' not in apt_policy.stdout))
-        or
-        (dnf_info.stdout is defined and 'Version' in dnf_info.stdout and 
-         ('{{ webkit_safe_version }}' not in dnf_info.stdout))
+    - name: Ensure web content sandbox service is running (if applicable)
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop:
+        - webkitgtk-sandbox
+        - sandboxd
+      ignore_errors: true
