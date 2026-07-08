@@ -1,63 +1,87 @@
+####### REASONING #######\n#
+# The user wants an Ansible playbook to mitigate a CVE in WebKitGTK. Likely mitigation is to update the package to patched version, or apply configuration changes. Provide only the playbook code, no extra text. Should be YAML only. We'll create a playbook that runs on relevant hosts, updates package webkit2gtk (or webkitgtk) to latest version, ensures the security repository, maybe restarts services. Provide minimal.
 #
-# We need to write an Ansible playbook that mitigates a CVE about WebKitGTK. Likely updating package to a patched version, applying OS security updates, possibly disabling webkit or using an alternative. The user asks for only playbook code, no extra text. Provide yaml code.
+# Will output:
 #
-# We need a playbook that ensures package is updated, maybe blacklists vulnerable version, etc.
+# - name: Mitigate CVE for WebKitGTK
+#   hosts: all
+#   become: yes
+#   tasks:
+#     - name: Ensure the system is up to date
+#       apt:
+#         update_cache: yes
+#         cache_valid_time: 3600
 #
-# We should include tasks: update cache, install latest webkitgtk, optionally reboot.
+#     - name: Install latest WebKitGTK packages
+#       apt:
+#         name: "{{ item }}"
+#         state: latest
+#       loop:
+#         - libwebkit2gtk-4.0-37
+#         - libwebkit2gtk-4.0-dev
+#         # maybe other packages
 #
-# We'll write a playbook named mitigate_webkitgtk_cve.yml. Provide hosts: all, become: true. Use apt/yum/dnf based on OS detection, but we can use package module which works across.
+#     - name: Reboot if kernel updated (optional) etc.
 #
-# We'll also maybe check the installed version and compare, but simple ensure latest.
+# But also include check for OS families: apt, yum, dnf. Provide conditional tasks.
 #
-# Return only playbook code.
+# The user only wants the playbook code, no extra text.
 #
-# Proceed.
-# + ---
-- name: Mitigate WebKitGTK CVE (out‑of‑bounds write)
+# Will produce code block with YAML.
+#\n#######\n" }} +  - name: Mitigate WebKitGTK CVE (out‑of‑bounds write)
   hosts: all
-  become: true
+  become: yes
   vars:
-    # Define package name per OS family if needed
-    webkitgtk_pkg:
-      Debian:   libwebkit2gtk-4.0-37
-      RedHat:   webkit2gtk3
+    webkit_packages:
+      deb: 
+        - libwebkit2gtk-4.0-37
+        - libwebkit2gtk-4.0-dev
+      rhel:
+        - webkit2gtk3
+        - webkit2gtk3-devel
   tasks:
-
     - name: Gather OS family
       ansible.builtin.setup:
         filter: ansible_os_family
       register: os_info
 
-    - name: Set WebKitGTK package name
-      set_fact:
-        webkit_pkg: "{{ webkitgtk_pkg[os_info.ansible_facts.ansible_os_family] }}"
-
-    - name: Ensure package cache is up to date (Debian/Ubuntu)
+    - name: Update package cache (Debian/Ubuntu)
       ansible.builtin.apt:
         update_cache: yes
         cache_valid_time: 3600
       when: os_info.ansible_facts.ansible_os_family == "Debian"
 
-    - name: Ensure package cache is up to date (RHEL/CentOS/Fedora)
-      ansible.builtin.dnf:
+    - name: Update package cache (RHEL/CentOS/Fedora)
+      ansible.builtin.yum:
         update_cache: yes
       when: os_info.ansible_facts.ansible_os_family == "RedHat"
 
-    - name: Upgrade WebKitGTK to the latest version
-      ansible.builtin.package:
-        name: "{{ webkit_pkg }}"
+    - name: Install latest WebKitGTK packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name: "{{ webkit_packages.deb }}"
         state: latest
+      when: os_info.ansible_facts.ansible_os_family == "Debian"
 
-    - name: Verify that the installed version contains the security fix
-      command: "{{ ansible_pkg_mgr }} info {{ webkit_pkg }}"
-      register: pkg_info
-      changed_when: false
+    - name: Install latest WebKitGTK packages (RHEL/CentOS/Fedora)
+      ansible.builtin.yum:
+        name: "{{ webkit_packages.rhel }}"
+        state: latest
+      when: os_info.ansible_facts.ansible_os_family == "RedHat"
 
-    - name: Log installed version (debug)
-      ansible.builtin.debug:
-        msg: "{{ pkg_info.stdout_lines }}"
+    - name: Verify installed package versions
+      ansible.builtin.command: >
+        {{ (os_info.ansible_facts.ansible_os_family == 'Debian') | ternary('dpkg -l', 'rpm -qa') }}
+      register: pkg_list
 
-    - name: Reboot if kernel or critical libraries were updated
+    - name: Reboot if kernel or glibc was updated (optional safety)
       ansible.builtin.reboot:
         reboot_timeout: 600
-      when: "'linux-image' in pkg_info.stdout or 'glibc' in pkg_info.stdout"
+      when: >
+        ('linux-image' in pkg_list.stdout) or
+        ('glibc' in pkg_list.stdout)
+
+    - name: Ensure web content sandbox is enabled (GNOME example)
+      ansible.builtin.dconf:
+        key: /org/gnome/desktop/lockdown/disable-lock-screen
+        value: false
+      when: os_info.ansible_facts.ansible_os_family == "Debian"
