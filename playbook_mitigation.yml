@@ -1,56 +1,77 @@
 ####### REASONING #######
-# We need to produce an Ansible playbook that mitigates CVE
-# about WebKitGTK out-of-bounds write. Likely remediation is
-# updating the package to a patched version or applying distro
-# security updates. Provide tasks: ensure package webkit2gtk
-# is at latest version, maybe apply specific version. Also
-# ensure that system is rebooted if kernel changes? Not
-# needed.
+# The user wants an Ansible playbook to mitigate a specific
+# CVE: a flaw in WebKitGTK causing out-of-bounds write. Likely
+# mitigation involves updating the package to a patched
+# version, ensuring the OS repository has the latest version,
+# possibly applying security patches, and maybe disabling
+# certain features. We need to output only the playbook code,
+# no other text.
 #
-# We just need to output only the playbook code, no extra
-# text. Use yaml. Should include hosts, become: yes, tasks
-# with name, apt/yum/dnf etc. Could use package module with
-# state: latest and name: webkit2gtk. Provide comments maybe
-# inside yaml but it's still part of playbook. Should be
-# minimal.
+# We must be careful to produce proper YAML syntax with proper
+# formatting. We'll need to include tasks: ensure the package
+# is updated, maybe check version, restart service if needed.
+# Also could include OS-specific tasks (Debian/Ubuntu using
+# apt, RHEL/CentOS using yum/dnf). Could make it generic using
+# package module.
 #
-# Let's produce a generic playbook supporting both Debian and
-# RedHat families with conditional. Use ansible_facts.
+# We'll return only the playbook code block.
 #
-# Will output code only.
+# No explanations.
 #######
 ---
 - name: Mitigate WebKitGTK out-of-bounds write vulnerability (CVE-XXXX-XXXX)
   hosts: all
   become: true
   vars:
-    webkitgtk_packages:
-      Debian:  [ "libwebkit2gtk-4.0-37" ]        # Adjust package name/version as needed
-      RedHat:  [ "WebKitGTK3" ]                # Adjust package name/version as needed
+    webkitgtk_package: "libwebkit2gtk-4.0-0"
+    # Minimum safe version that contains the fix; adjust as needed
+    safe_version: "2.40.5-0ubuntu0.20.04.2"
   tasks:
-    - name: Gather OS family facts
-      ansible.builtin.setup:
-        filter: ansible_os_family
-      tags: always
 
-    - name: Ensure vulnerable WebKitGTK packages are updated (Debian/Ubuntu)
-      ansible.builtin.apt:
-        name: "{{ webkitgtk_packages['Debian'] }}"
-        state: latest
+    - name: Gather package facts
+      package_facts:
+        manager: auto
+
+    - name: Ensure WebKitGTK is installed
+      package:
+        name: "{{ webkitgtk_package }}"
+        state: present
+
+    - name: Check if installed WebKitGTK version is vulnerable
+      set_fact:
+        current_version: "{{ ansible_facts.packages[webkitgtk_package][0].version }}"
+      when: webkitgtk_package in ansible_facts.packages
+
+    - name: Upgrade WebKitGTK to safe version (APT-based systems)
+      apt:
+        name: "{{ webkitgtk_package }}={{ safe_version }}"
+        state: present
         update_cache: yes
-      when: ansible_facts['os_family'] == "Debian"
-      register: apt_result
+      when:
+        - ansible_facts.os_family == "Debian"
+        - current_version is version(safe_version, '<')
 
-    - name: Ensure vulnerable WebKitGTK packages are updated (RedHat/CentOS/Fedora)
-      ansible.builtin.yum:
-        name: "{{ webkitgtk_packages['RedHat'] }}"
-        state: latest
-      when: ansible_facts['os_family'] == "RedHat"
-      register: yum_result
+    - name: Upgrade WebKitGTK to safe version (YUM/DNF-based systems)
+      yum:
+        name: "{{ webkitgtk_package }}-{{ safe_version }}"
+        state: present
+        update_cache: yes
+      when:
+        - ansible_facts.os_family in ["RedHat", "Suse"]
+        - current_version is version(safe_version, '<')
 
-    - name: Reboot if kernel was updated (optional)
-      ansible.builtin.reboot:
-        reboot_timeout: 600
-      when: (apt_result is defined and apt_result.changed) or
-            (yum_result is defined and yum_result.changed)
-      tags: reboot
+    - name: Verify the package version after upgrade
+      command: "{{ ansible_facts.pkg_mgr }} list {{ webkitgtk_package }}"
+      register: pkg_check
+      changed_when: false
+
+    - name: Fail if the safe version was not installed
+      fail:
+        msg: "WebKitGTK was not upgraded to the safe version {{ safe_version }}. Manual intervention required."
+      when: pkg_check.stdout is not search(safe_version)
+
+    - name: Restart services that depend on WebKitGTK (example: gnome-web)
+      service:
+        name: gnome-web
+        state: restarted
+      when: "'gnome-web' in ansible_facts.services"
