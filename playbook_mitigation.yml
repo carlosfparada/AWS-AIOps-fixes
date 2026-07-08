@@ -1,61 +1,74 @@
 ####### REASONING #######
-# We need to produce an Ansible playbook to mitigate CVE: a WebKitGTK vulnerability. Mitigation could be updating the package to a patched version, applying security updates, maybe disabling certain features.
+# We need to provide an Ansible playbook to mitigate this CVE. There's a CVE about WebKitGTK out-of-bounds write. Mitigation would involve updating the package to a safe version, possibly applying patches. Provide a playbook that updates the package, ensures it's at least version fixing.
 #
-# We need to output only the playbook code, no extra text.
+# We need to output only the playbook code, no surrounding text.
 #
-# So just a YAML playbook. Include tasks: ensure system is updated, install latest version of webkitgtk, maybe ensure certain configuration. Provide playbook with hosts: all, become: yes.
+# So we provide YAML with hosts: all, become: true. Tasks: gather facts, update apt/yum, maybe check distribution. Use variables for package name: webkit2gtk-4.0? Actually WebKitGTK package names vary: on Debian/Ubuntu it's "libwebkit2gtk-4.0-37" or "webkit2gtk". Provide both.
 #
-# Let's produce concise playbook.
+# We can make tasks with package module to ensure latest version, and optionally check a known safe version.
+#
+# Return only playbook code. Ensure no extra text.
+#
+# Let's produce.
 #
 # 
-\n####### + "\n\n" +  ---
-- name: Mitigate WebKitGTK out-of-bounds write vulnerability (CVE)
+\n#######
+---
+- name: Mitigate WebKitGTK out-of-bounds write vulnerability (CVE-XXXX-XXXX)
   hosts: all
   become: true
   vars:
-    webkitgtk_pkg: "webkit2gtk"
-    safe_repo: "updates"
+    webkit_gtk_packages:
+      # Debian/Ubuntu
+      - name: libwebkit2gtk-4.0-37
+        min_version: "2.40.5-0ubuntu0.1"
+      # RHEL/CentOS/Fedora
+      - name: webkit2gtk3
+        min_version: "2.40.5-1.el9"
   tasks:
-    - name: Ensure system package cache is up to date
-      ansible.builtin.package:
+
+    - name: Ensure package manager cache is up to date (APT)
+      apt:
         update_cache: yes
-        cache_valid_time: 3600
+      when: ansible_pkg_mgr == "apt"
 
-    - name: Install latest security updates for WebKitGTK
-      ansible.builtin.yum:
-        name: "{{ webkitgtk_pkg }}*"
-        state: latest
-        security: yes
-        enablerepo: "{{ safe_repo }}"
-      when: ansible_facts['pkg_mgr'] == 'yum' or ansible_facts['pkg_mgr'] == 'dnf'
-
-    - name: Install latest security updates for WebKitGTK (apt)
-      ansible.builtin.apt:
-        name: "{{ webkitgtk_pkg }}*"
-        state: latest
+    - name: Ensure package manager cache is up to date (DNF/YUM)
+      dnf:
         update_cache: yes
-        cache_valid_time: 3600
-        install_recommends: no
-      when: ansible_facts['pkg_mgr'] == 'apt'
+      when: ansible_pkg_mgr in ["dnf", "yum"]
 
-    - name: Verify installed WebKitGTK version is patched
-      ansible.builtin.command: rpm -q {{ webkitgtk_pkg }} || dpkg -s {{ webkitgtk_pkg }}
-      register: webkit_version
+    - name: Install / update WebKitGTK packages to a safe version
+      package:
+        name: "{{ item.name }}"
+        state: latest
+      loop: "{{ webkit_gtk_packages }}"
+      register: webkit_update_results
+
+    - name: Verify installed version meets minimum requirement
+      shell: |
+        dpkg-query -W -f='${Version}' {{ item.name }} 2>/dev/null || \
+        rpm -q --qf '%{VERSION}-%{RELEASE}' {{ item.name }} 2>/dev/null
+      register: installed_version
       changed_when: false
+      loop: "{{ webkit_gtk_packages }}"
+      loop_control:
+        label: "{{ item.name }}"
 
-    - name: Fail if WebKitGTK version is still vulnerable
-      ansible.builtin.fail:
-        msg: "WebKitGTK package version {{ webkit_version.stdout }} may still be vulnerable. Manual review required."
+    - name: Fail if installed version is lower than the required minimum
+      fail:
+        msg: "Installed {{ item.item.name }} version ({{ item.stdout }}) is lower than required {{ item.item.min_version }}."
       when: >
-        (webkit_version.stdout is search('{{ webkitgtk_pkg }}-') and
-        webkit_version.stdout is not search('.*(CVE|patched|security).*', ignorecase=True))
+        (item.item.min_version is defined) and
+        (item.stdout is version(item.item.min_version, '<'))
+      loop: "{{ installed_version.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
 
-    - name: Restart services that depend on WebKitGTK (e.g., GNOME Web, browsers)
-      ansible.builtin.service:
+    - name: Restart services that depend on WebKitGTK (example: GNOME Web)
+      service:
         name: "{{ item }}"
         state: restarted
       loop:
-        - gnome-web-browser
-        - firefox
-        - epiphany
+        - gnome-web
+        - other-service-using-webkit
       ignore_errors: true
