@@ -1,15 +1,65 @@
 ---
-- name: Mitigate CVE-2021-30806 in WebKitGTK
+- name: Mitigate WebKitGTK CVE
   hosts: all
-  become: yes
+  become: true
+  vars:
+    # Package names per OS family
+    webkitgtk_pkg_deb: webkit2gtk
+    webkitgtk_pkg_rpm: webkit2gtk3
+    # Minimum safe version (replace with the version that fixes the CVE)
+    safe_version: "2.40.5-0ubuntu0.20.04.1"
   tasks:
-    - name: Update WebKitGTK package
-      apt:
-        name: webkit2gtk-4.0
-        state: latest
-      when: ansible_os_family == 'Debian'
+    - name: Gather package facts
+      ansible.builtin.package_facts:
 
-    - name: Update WebKitGTK package
-      yum:
-        name: webkit2gtk4
-        state
+    - name: Ensure WebKitGTK is up‑to‑date on Debian/Ubuntu
+      ansible.builtin.apt:
+        name: "{{ webkitgtk_pkg_deb }}"
+        state: latest
+        update_cache: yes
+      when: ansible_facts.os_family == "Debian"
+
+    - name: Ensure WebKitGTK is up‑to‑date on RedHat/CentOS/Fedora
+      ansible.builtin.yum:
+        name: "{{ webkitgtk_pkg_rpm }}"
+        state: latest
+      when: ansible_facts.os_family == "RedHat"
+
+    - name: Verify installed version meets the safe version (Debian)
+      ansible.builtin.command: dpkg-query -W -f='${Version}' {{ webkitgtk_pkg_deb }}
+      register: pkg_version_deb
+      changed_when: false
+      when: ansible_facts.os_family == "Debian"
+
+    - name: Verify installed version meets the safe version (RedHat)
+      ansible.builtin.command: rpm -q --queryformat '%{VERSION}-%{RELEASE}' {{ webkitgtk_pkg_rpm }}
+      register: pkg_version_rpm
+      changed_when: false
+      when: ansible_facts.os_family == "RedHat"
+
+    - name: Fail if installed version is older than the safe version (Debian)
+      ansible.builtin.fail:
+        msg: |
+          Installed WebKitGTK version ({{ pkg_version_deb.stdout }}) is older than the safe version ({{ safe_version }}).
+          Manual remediation required.
+      when:
+        - ansible_facts.os_family == "Debian"
+        - pkg_version_deb.stdout is version(safe_version, '<')
+
+    - name: Fail if installed version is older than the safe version (RedHat)
+      ansible.builtin.fail:
+        msg: |
+          Installed WebKitGTK version ({{ pkg_version_rpm.stdout }}) is older than the safe version ({{ safe_version }}).
+          Manual remediation required.
+      when:
+        - ansible_facts.os_family == "RedHat"
+        - pkg_version_rpm.stdout is version(safe_version, '<')
+
+    - name: Restart services that may use WebKitGTK
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - gnome-browser
+        - epiphany
+      ignore_errors: true
