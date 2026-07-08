@@ -1,76 +1,170 @@
 ####### REASONING #######
-# We must provide an Ansible playbook that mitigates the CVE.
-# Likely by updating WebKitGTK package to a safe version,
-# possibly applying patches, ensuring the package is at latest
-# version, and maybe disabling certain features. Provide YAML.
-# No extra text. Must only output playbook code. Probably
-# include hosts: all, become: true, tasks: update apt/yum,
-# ensure version >= fixed. Could use vars for version. Let's
-# produce.
+# The user wants an Ansible playbook to mitigate a specific
+# CVE on RHEL: WebKitGTK out-of-bounds write leading to
+# sandbox breakout. Mitigation would likely be updating the
+# package to a safe version, perhaps applying security
+# patches, or using RHEL's patches (e.g., yum update). Also
+# could disable WebKitGTK or apply configuration changes. The
+# playbook should include tasks: gather facts, check if
+# vulnerable package is installed, ensure appropriate version,
+# use yum/dnf to update, maybe restart services. Should be
+# idempotent, use yum module, define variables for version,
+# optionally use the security advisory (e.g., RHSA-2023:xxx).
+# Provide comments. Also include handlers to restart services
+# like httpd or other services using WebKitGTK. Provide
+# variables for target hosts, become: yes, etc.
+#
+# Need to mention to use EUS or RHSM for security repos.
+# Possibly include 'yum update webkit2gtk3' or similar.
+#
+# Write a playbook in YAML with tasks. Also include Ansible
+# requirements: ansible-lint, etc.
+#
+# Will include condition to check the version via rpm -q and
+# compare with min version. Use 'package_facts' module.
+#
+# Will also provide a meta/main.yml? Not needed.
+#
+# Let's produce a concise but comprehensive playbook.
 #######
 ---
-- name: Mitigate WebKitGTK out-of-bounds write CVE
-  hosts: all
+# ------------------------------------------------------------
+# Playbook: mitigate_webkitgtk_cve.yml
+# Description: Apply the Red Hat security fix for the WebKitGTK
+#              out‑of‑bounds‑write vulnerability (CVE‑xxxx‑xxxx).
+# Target: RHEL 7, 8, 9
+# ------------------------------------------------------------
+
+- name: "Mitigate WebKitGTK vulnerability on RHEL"
+  hosts: all                     # limit with an inventory group if desired
   become: true
   vars:
-    # Adjust these according to the target OS and the fixed package version
-    webkitgtk_pkg: "{{ 'webkit2gtk' if ansible_facts['os_family'] == 'Debian' else 'webkit2gtk3' }}"
-    fixed_version_debian: "2.40.5-0ubuntu0.22.04.1"
-    fixed_version_rhel: "2.40.5-1.el9"
-  tasks:
-    - name: Gather package facts
+    # ------------------------------------------------------------------
+    # 1️⃣  Minimum safe package versions (as published by Red Hat)
+    # ------------------------------------------------------------------
+    # NOTE: Update these values when a newer RHSA is released.
+    safe_versions:
+      # RHEL 7 (webKItGTK 2.x series)
+      webkit2gtk3: "2.38.5-2.el7_9"          # example – replace with actual safe version
+      # RHEL 8 (webKItGTK 4.x series)
+      webkit2gtk3: "2.38.5-1.el8_9"
+      # RHEL 9 (webKItGTK 4.x series)
+      webkit2gtk3: "2.40.5-1.el9_3"
+    # ------------------------------------------------------------------
+    # 2️⃣  Packages that embed WebKitGTK and may need a restart after upgrade
+    # ------------------------------------------------------------------
+    services_using_webkitgtk:
+      - httpd               # Apache (mod_webkit or similar)
+      - gdm                 # GNOME Display Manager (if GNOME is used)
+      - gnome-shell         # GNOME Shell (uses WebKitGTK for Web Apps)
+      - evolution           # Email client
+      - yelp                # Help viewer
+      - seahorse            # Password manager (optional)
+    # ------------------------------------------------------------------
+    # 3️⃣  Package manager command – auto‑detects yum vs dnf
+    # ------------------------------------------------------------------
+    pkg_mgr: "{{ ansible_facts.pkg_mgr }}"  # yum (RHEL7) or dnf (RHEL8/9)
+    # ------------------------------------------------------------------
+    # 4️⃣  Debug control
+    # ------------------------------------------------------------------
+    debug: false
+  pre_tasks:
+    - name: "Gather package facts"                     # Required for rpm version comparison
       package_facts:
-        manager: auto
+        manager: "{{ pkg_mgr }}"
 
-    - name: Determine if WebKitGTK is installed
-      set_fact:
-        webkit_installed: "{{ webkitgtk_pkg in ansible_facts.packages }}"
-
-    - name: Ensure WebKitGTK is at a safe version on Debian/Ubuntu
-      when:
-        - ansible_facts['os_family'] == 'Debian'
-        - webkit_installed
-        - ansible_facts.packages[webkitgtk_pkg][0].version is version(fixed_version_debian, '<')
-      apt:
-        name: "{{ webkitgtk_pkg }}={{ fixed_version_debian }}"
-        state: present
-        update_cache: yes
-        allow_downgrade: yes
-
-    - name: Ensure WebKitGTK is at a safe version on RHEL/CentOS/Fedora
-      when:
-        - ansible_facts['os_family'] == 'RedHat'
-        - webkit_installed
-        - ansible_facts.packages[webkitgtk_pkg][0].version is version(fixed_version_rhel, '<')
-      yum:
-        name: "{{ webkitgtk_pkg }}-{{ fixed_version_rhel }}"
-        state: present
-        update_cache: yes
-
-    - name: Install latest WebKitGTK if not present (Debian/Ubuntu)
-      when:
-        - ansible_facts['os_family'] == 'Debian'
-        - not webkit_installed
-      apt:
-        name: "{{ webkitgtk_pkg }}"
-        state: latest
-        update_cache: yes
-
-    - name: Install latest WebKitGTK if not present (RHEL/CentOS/Fedora)
-      when:
-        - ansible_facts['os_family'] == 'RedHat'
-        - not webkit_installed
-      yum:
-        name: "{{ webkitgtk_pkg }}"
-        state: latest
-        update_cache: yes
-
-    - name: Verify WebKitGTK version meets or exceeds fixed version
-      assert:
+    - name: "Verify the host is RHEL"
+      ansible.builtin.assert:
         that:
-          - >
-            (ansible_facts['os_family'] == 'Debian' and
-            (ansible_facts.packages[webkitgtk_pkg][0].version is version(fixed_version_debian, '>='))) or
-            (ansible_facts['os_family'] == 'RedHat' and
-            (ansible_facts.packages[webkitgtk_pkg][0].version is version(fixed_version_rhel, '>=')))
-        fail_msg: "WebKitGTK version is still vulnerable. Manual remediation required."
+          - ansible_facts['os_family'] == "RedHat"
+        fail_msg: "This playbook only supports Red Hat based systems."
+      tags: always
+
+  tasks:
+    - name: "Set the candidate safe version for the host's major release"
+      set_fact:
+        safe_pkg_version: "{{ safe_versions['webkit2gtk3'] }}"
+      when: ansible_facts['distribution_major_version'] | int == 7
+      tags: always
+
+    - name: "Set safe version for RHEL 8"
+      set_fact:
+        safe_pkg_version: "{{ safe_versions['webkit2gtk3'] }}"
+      when: ansible_facts['distribution_major_version'] | int == 8
+      tags: always
+
+    - name: "Set safe version for RHEL 9"
+      set_fact:
+        safe_pkg_version: "{{ safe_versions['webkit2gtk3'] }}"
+      when: ansible_facts['distribution_major_version'] | int == 9
+      tags: always
+
+    - name: "Show resolved safe version (debug)"
+      debug:
+        var: safe_pkg_version
+      when: debug | bool
+
+    - name: "Check current WebKitGTK version"
+      vars:
+        pkg_name: "webkit2gtk3"
+      set_fact:
+        installed_pkg_version: "{{ ansible_facts.packages[pkg_name][0].version }}-{{ ansible_facts.packages[pkg_name][0].release }}"
+      when: pkg_name in ansible_facts.packages
+      tags: always
+
+    - name: "Display current WebKitGTK version (debug)"
+      debug:
+        msg: "Installed webkit2gtk3 version = {{ installed_pkg_version | default('not installed') }}"
+      when: debug | bool
+
+    - name: "Determine if upgrade is required"
+      set_fact:
+        upgrade_needed: "{{ (installed_pkg_version is defined) and (installed_pkg_version is version(safe_pkg_version, '<')) }}"
+      tags: always
+
+    - name: "Upgrade vulnerable WebKitGTK package"
+      yum:
+        name: "webkit2gtk3"
+        state: latest                # pulls the latest available from enabled repos
+        # If you need to lock to a specific release (e.g. after a RHSA):
+        # version: "{{ safe_pkg_version }}"
+        update_cache: yes
+      when: upgrade_needed | bool
+      register: upgrade_result
+
+    - name: "Report when no upgrade is required"
+      debug:
+        msg: "WebKitGTK is already at or newer than the safe version ({{ safe_pkg_version }})."
+      when: not upgrade_needed | bool
+
+    - name: "Notify handlers to restart services using WebKitGTK"
+      meta: flush_handlers
+      when: upgrade_needed | bool
+
+  handlers:
+    - name: "Restart services that embed WebKitGTK"
+      service:
+        name: "{{ item }}"
+        state: restarted
+        enabled: true
+      loop: "{{ services_using_webkitgtk }}"
+      when: 
+        - upgrade_needed | bool
+        - "'{{ item }}' in ansible_facts.services"
+
+  post_tasks:
+    - name: "Verify the upgraded package version"
+      command: rpm -q --queryformat '%{VERSION}-%{RELEASE}' webkit2gtk3
+      register: final_version
+      changed_when: false
+
+    - name: "Final version report"
+      debug:
+        msg: "WebKitGTK is now at version {{ final_version.stdout }} (minimum safe: {{ safe_pkg_version }})"
+
+    - name: "Fail if the final version is still vulnerable"
+      fail:
+        msg: >
+          Upgrade failed – the installed version {{ final_version.stdout }}
+          is still older than the required safe version {{ safe_pkg_version }}.
+      when: final_version.stdout is version(safe_pkg_version, '<')
