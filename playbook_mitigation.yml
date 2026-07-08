@@ -70,8 +70,8 @@
         msg: "WebKitGTK was not upgraded to the safe version {{ safe_version }}. Manual intervention required."
       when: pkg_check.stdout is not search(safe_version)
 
-    - name: Restart services that depend on WebKitGTK (example: gnome-web)
-      service:
-        name: gnome-web
-        state: restarted
-      #when: "'gnome-web' in ansible_facts.services"
+    #- name: Restart services that depend on WebKitGTK (example: gnome-web)
+    #  service:
+    #    name: gnome-web
+    #    state: restarted
+    #  when: "'gnome-web' in ansible_facts.services"
