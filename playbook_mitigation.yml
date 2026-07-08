@@ -1,70 +1,92 @@
 ####### REASONING #######
-# We need to output only ansible playbook code that mitigates
-# the CVE for WebKitGTK. Likely updating the package to fixed
-# version, ensuring patches applied, maybe enable security
-# updates. Provide playbook. We must output only the playbook
-# code, no extra text. So start with "---" then tasks. Could
-# include hosts, become: true. Use apt/yum module for package
-# update. Provide variables for version perhaps. Could also
-# check service restart if needed. Provide handlers. Let's
-# produce concise playbook.
+# The user asks for an Ansible playbook to mitigate a CVE
+# (WebKitGTK out-of-bounds write). Likely we need to update
+# package, apply security patches, maybe disable certain
+# features, enforce sandbox. Provide Ansible YAML. Ensure no
+# extra text. Provide just code.
 #######
 ---
-- name: Mitigate WebKitGTK out-of-bounds write vulnerability
+- name: Mitigate WebKitGTK CVE (out-of-bounds write)
   hosts: all
   become: true
   vars:
-    webkitgtk_package:
-      Debian: "libwebkit2gtk-4.0-37"
-      RedHat: "webkitgtk4"
-    webkitgtk_fixed_version:
-      Debian: "2.40.5-0ubuntu0.22.04.1"   # example fixed version
-      RedHat: "2.40.5-1.el9"              # example fixed version
+    webkitgtk_package: "webkit2gtk"
+    webkitgtk_repo_key_url: "https://download.gnome.org/keys/gnome-archive-keyring.gpg"
+    webkitgtk_repo_url: "deb https://download.gnome.org/ubuntu/ {{ ansible_distribution_release }} main"
+    webkitgtk_repo_file: "/etc/apt/sources.list.d/webkitgtk.list"
+    safe_webkit_version: "2.36.5-0ubuntu0.20.04.1"  # example patched version, adjust per OS
   tasks:
-    - name: Gather OS distribution facts
-      ansible.builtin.setup:
-        filter: ansible_distribution*
-    
-    - name: Set package name based on OS family
-      set_fact:
-        pkg_name: "{{ webkitgtk_package[ansible_facts['os_family']] }}"
-    
-    - name: Ensure WebKitGTK is at a fixed version (Debian/Ubuntu)
-      when: ansible_facts['os_family'] == 'Debian'
-      apt:
-        name: "{{ pkg_name }}={{ webkitgtk_fixed_version['Debian'] }}"
-        state: present
-        update_cache: yes
-      notify: Restart affected services
-    
-    - name: Ensure WebKitGTK is at a fixed version (RedHat/CentOS/Fedora)
-      when: ansible_facts['os_family'] == 'RedHat'
-      yum:
-        name: "{{ pkg_name }}-{{ webkitgtk_fixed_version['RedHat'] }}"
-        state: present
-      notify: Restart affected services
 
-    - name: Verify installed version is fixed or newer
-      command: "{{ ansible_facts['os_family'] == 'Debian' | ternary('dpkg -s ' + pkg_name, 'rpm -q ' + pkg_name) }}"
-      register: version_check
+    - name: Ensure required apt libraries are present (Debian/Ubuntu)
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - gnupg
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Add WebKitGTK repository GPG key
+      apt_key:
+        url: "{{ webkitgtk_repo_key_url }}"
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Add WebKitGTK repository
+      apt_repository:
+        repo: "{{ webkitgtk_repo_url }}"
+        filename: "webkitgtk"
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install/upgrade WebKitGTK to patched version
+      apt:
+        name: "{{ webkitgtk_package }}={{ safe_webkit_version }}"
+        state: present
+        allow_downgrade: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Ensure WebKitGTK is at least the minimum safe version (RedHat/CentOS)
+      yum:
+        name: "{{ webkitgtk_package }}"
+        state: latest
+      when: ansible_os_family == "RedHat"
+
+    - name: Verify installed WebKitGTK version
+      command: "{{ webkitgtk_package }}-config --version"
+      register: webkit_version
       changed_when: false
 
-    - name: Fail if vulnerable version is still installed
+    - name: Fail if version is still vulnerable
       fail:
-        msg: "WebKitGTK vulnerable version detected. Manual intervention required."
+        msg: >
+          Installed WebKitGTK version ({{ webkit_version.stdout }}) is lower than
+          the required patched version {{ safe_webkit_version }}.
       when: >
-        (ansible_facts['os_family'] == 'Debian' and
-         version_check.stdout is search('Version: (?!{{ webkitgtk_fixed_version['Debian'] }})')) or
-        (ansible_facts['os_family'] == 'RedHat' and
-         version_check.stdout is search('{{ webkitgtk_fixed_version['RedHat'] }}') == false)
+        (ansible_os_family == "Debian" and webkit_version.stdout is version(safe_webkit_version, '<')) or
+        (ansible_os_family == "RedHat" and webkit_version.stdout is version('2.36.5', '<'))
 
-  handlers:
-    - name: Restart affected services
+    - name: Harden WebKitGTK sandbox settings (if applicable)
+      lineinfile:
+        path: /etc/webkitgtk/webkitgtk.conf
+        regexp: '^#?sandbox_enabled='
+        line: 'sandbox_enabled=true'
+        create: yes
+        mode: '0644'
+      when: ansible_os_family == "Debian"
+
+    - name: Restart services that depend on WebKitGTK
       service:
         name: "{{ item }}"
         state: restarted
       loop:
-        - gdm
-        - lightdm
-        - sddm
-        - plasma-desktop
+        - gnome-shell
+        - evolution
+        - midori
+      ignore_errors: yes
