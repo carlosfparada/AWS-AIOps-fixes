@@ -1,175 +1,199 @@
 ####### REASONING #######
-# The user asks: "Write an ansible playbook to mitigate the
-# following CVE on rhel hosts: 'A flaw was found in WebKitGTK.
-# Processing malicious web content can trigger an out-of-
-# bounds write due to improper checks to prevent unauthorized
-# actions, causing a break out of Web Content sandbox.'"
-#
-# We need to produce an ansible playbook that mitigates this
-# CVE on RHEL hosts. Likely mitigation includes updating the
-# affected package (WebKitGTK) to a fixed version. Also maybe
-# ensuring the appropriate repositories are enabled, applying
-# security patches, possibly restarting services.
-#
-# We should ensure the answer is appropriate, no disallowed
-# content. It's providing code, not disallowed. OK.
-#
-# We'll output a playbook: include hosts: all, become: yes,
-# tasks: check for package, update via dnf, ensure latest
-# version, maybe include yum_security plugin.
-#
-# Optionally preview the CVE ID? Not given. Provide example
-# tasks: backup config, use dnf module, use yum, use yum_repo.
-# Provide comment.
-#
-# We'll provide variables: webkitgtk_pkg: "WebKitGTK" maybe.
-#
-# Also optionally handle the case of RHEL 7 using yum.
-#
-# Let's produce a playbook with variables, tasks: 1) gather
-# facts, 2) ensure webkitgtk is installed and up to date, 3)
-# verify version, 4) reboot if required, 5) report.
-#
-# We'll include a handler to restart service if needed (maybe
-# affected services like GNOME Web, but not necessary).
-# Provide example.
-#
-# We must ensure the answer is just the playbook.
-#
-# Probably also include tasks to enable RHSA updates.
-#
-# Okay.
+# The user wants an Ansible playbook to mitigate a specific
+# CVE on RHEL hosts: a flaw in WebKitGTK. They want a
+# playbook. Provide a playbook that updates package, applies
+# relevant patches, maybe ensures version. Also include steps
+# to check current version, apply update from RHEL security
+# repository, possibly restart services. Provide variables,
+# handlers. Should be safe. Also maybe include remediations
+# like disabling WebKitGTK if not needed. Provide explanation.
+# Ensure it's not disallowed. It's permissible. Provide YAML.
 #######
 ---
-# playbook: mitigate_webkitgtk_cve.yml
-# Description: Update WebKitGTK to a version that contains the security fix
-#              for the out‑of‑bounds write vulnerability.
-# Requirements:  - Ansible 2.9+ (comes with RHEL 8/9)
-#                - Managed nodes must be registered to RHSM or have the appropriate
-#                  Red Hat repositories enabled.
-# Usage: ansible-playbook -i inventory mitigate_webkitgtk_cve.yml
+# --------------------------------------------------------------
+# Playbook: mitigate_webkitgtk.yml
+# Purpose: Apply Red Hat security fix for WebKitGTK (CVE‑XXXX‑XXXX)
+# Supported OS: RHEL 7, 8, 9 (all with RHSM subscription)
+# --------------------------------------------------------------
 
-- name: Mitigate WebKitGTK out‑of‑bounds write vulnerability
-  hosts: rhel   # <-- adjust to your inventory group / host pattern
+- name: "Mitigate WebKitGTK out‑of‑bounds write vulnerability"
+  hosts: all
   become: true
   vars:
-    # Package name varies by RHEL major version:
-    #   RHEL 7  -> webkitgtk
-    #   RHEL 8/9 -> webkitgtk4
-    #   (Both provide the same library, choose the one that exists on the host)
-    pkg_name_rhel7: webkitgtk
-    pkg_name_rhel8: webkitgtk4
+    # -----------------------------------------------------------------
+    # Default variables – override them in group_vars/host_vars if desired
+    # -----------------------------------------------------------------
+    # Package name(s) that contain WebKitGTK.  Adjust if you have a
+    # different naming scheme (e.g., on RHEL 7 the package is called
+    # `webkitgtk3`; on RHEL 8/9 it is `webkit2gtk3`).
+    webkitgtk_packages:
+      - webkit2gtk3          # RHEL 8/9
+      - webkitgtk3           # RHEL 7 (fallback)
 
-    # Minimum version that includes the CVE fix.
-    #   You can obtain the exact version from the Red Hat security advisory (RHSA‑xxxx).
-    #   Example (replace with the real version numbers):
-    min_fixed_version_rhel7: "2.4.10-38.el7"
-    min_fixed_version_rhel8: "2.40.5-6.el8"
+    # Desired minimal version after the security fix.
+    # Update this value whenever Red Hat releases a newer advisory.
+    webkitgtk_fixed_version: "2.40.5-1.el9_0"   # Example for RHEL 9
 
-    # Whether to force a reboot if a library reload is required.
-    reboot_if_needed: true
+    # List of services that may be using WebKitGTK and should be restarted.
+    # Add/remove entries based on your environment.
+    service_restart:
+      - gdm
+      - cockpit
+      - gnome-shell
+      - NetworkManager
+
+    # Whether to actually apply changes or just perform a “check‑mode” run.
+    dry_run: false
+
+    # Whether to verify the installed version after the update.
+    verify_installation: true
+
+    # Optional: custom Red Hat repository URL (if you use a satellite/spacewalk mirror)
+    rh_repo_baseurl: ""   # leave empty to use the default RHSM repos
 
   pre_tasks:
-    - name: Gather full facts (required for ansible_distribution_major_version)
-      ansible.builtin.setup:
-        filter: ansible_distribution*
 
-    - name: Ensure RHSM subscription is attached (RHEL 8/9)
-      ansible.builtin.command: subscription-manager status
-      register: rhsm_status
-      changed_when: false
-      failed_when: rhsm_status.rc != 0
-      when: ansible_distribution_major_version|int >= 8
-
-    - name: Enable Red Hat repositories that contain security updates
-      ansible.builtin.command: |
-        subscription-manager repos --enable={{ item }}
-      loop:
-        - rhel-{{ ansible_distribution_major_version }}-server-rpms
-        - rhel-{{ ansible_distribution_major_version }}-server-rhscl-rpms
-        - rhel-{{ ansible_distribution_major_version }}-server-extras-rpms
-      when: ansible_distribution_major_version|int >= 8
-      register: repo_enable
-      changed_when: "'Enabling' in repo_enable.stdout"
-      # ignore errors on already‑enabled repos
-      ignore_errors: true
-
-  tasks:
-    - name: Determine correct package name for this host
-      ansible.builtin.set_fact:
-        webkitgtk_pkg_name: >-
-          {% if ansible_distribution_major_version|int == 7 %}
-            {{ pkg_name_rhel7 }}
-          {% else %}
-            {{ pkg_name_rhel8 }}
-          {% endif %}
-        webkitgtk_min_version: >-
-          {% if ansible_distribution_major_version|int == 7 %}
-            {{ min_fixed_version_rhel7 }}
-          {% else %}
-            {{ min_fixed_version_rhel8 }}
-          {% endif %}
-
-    - name: Install or update WebKitGTK to the latest available version
-      ansible.builtin.package:
-        name: "{{ webkitgtk_pkg_name }}"
-        state: latest
-        use: "{{ 'dnf' if ansible_distribution_major_version|int >= 8 else 'yum' }}"
-      register: webkit_install
-
-    - name: Verify installed WebKitGTK version meets minimum fixed version
-      ansible.builtin.command: rpm -q --qf '%{VERSION}-%{RELEASE}\n' {{ webkitgtk_pkg_name }}
-      register: installed_version
-      changed_when: false
-
-    - name: Fail if installed version is older than the minimum fixed version
+    - name: "Assert we are running on a Red Hat family OS"
       ansible.builtin.assert:
         that:
-          - installed_version.stdout is version(webkitgtk_min_version, '>=')
-        fail_msg: |
-          The installed {{ webkitgtk_pkg_name }} version ({{ installed_version.stdout }})
-          is older than the security‑fixed version {{ webkitgtk_min_version }}.
-          Manual intervention may be required.
-        success_msg: |
-          {{ webkitgtk_pkg_name }} version {{ installed_version.stdout }} meets the
-          required minimum {{ webkitgtk_min_version }}.
+          - ansible_facts['os_family'] == "RedHat"
+        fail_msg: "This playbook only supports Red Hat based systems."
+      tags: always
 
-    - name: List services that might need a restart because they link to WebKitGTK
-      ansible.builtin.shell: |
-        systemctl list-units --type=service --state=running |
-        grep -iE 'epiphany|gnome|webkit' || true
-      register: services_to_restart
+    - name: "Gather subscription status (RHEL) – fail if not registered"
+      ansible.builtin.command: "subscription-manager status"
+      register: sub_status
       changed_when: false
+      failed_when: sub_status.rc != 0
+      when: ansible_facts['distribution'] in ['RedHat', 'CentOS']
+      tags: always
 
-    - name: Restart affected services (if any)
-      ansible.builtin.service:
-        name: "{{ item.split()[0] }}"
-        state: restarted
-      loop: "{{ services_to_restart.stdout_lines }}"
-      when: services_to_restart.stdout != ''
-      notify:
-        - Print service restart summary
+    - name: "Enable required Red Hat repos (if a custom baseurl is supplied)"
+      ansible.builtin.yum_repository:
+        name: rhel-{{ ansible_facts['distribution_major_version'] }}-server-rpms
+        description: "Red Hat Enterprise Linux {{ ansible_facts['distribution_major_version'] }} Server RPMs"
+        baseurl: "{{ rh_repo_baseurl | default(omit) }}"
+        enabled: true
+        gpgcheck: true
+        gpgkey: "file:///etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release"
+      when: rh_repo_baseurl | length > 0
+      tags: repos
 
-    - name: Check if a reboot is required (yum/dnf plugin)
-      ansible.builtin.command: |
-        {{ 'dnf' if ansible_distribution_major_version|int >= 8 else 'yum' }} needs-restarting -r
-      register: reboot_needed
-      changed_when: false
-      failed_when: false
-      ignore_errors: true
+  tasks:
 
-    - name: Reboot the host if required and allowed
-      ansible.builtin.reboot:
-        reboot_timeout: 600
-        test_command: whoami
+    - name: "Collect currently installed WebKitGTK packages"
+      ansible.builtin.package_facts:
+        manager: auto
+      tags: gather
+
+    - name: "Show current versions (debug)"
+      ansible.builtin.debug:
+        var: ansible_facts.packages
+        verbosity: 2
+      tags: debug
+
+    - name: "Identify which WebKitGTK package is present"
+      set_fact:
+        webkit_pkg_installed: "{{ item }}"
+      loop: "{{ webkitgtk_packages }}"
+      when: ansible_facts.packages[item] is defined
+      register: pkg_finder
+      tags: identify
+
+    - name: "Fail if no known WebKitGTK package is installed"
+      ansible.builtin.fail:
+        msg: "None of the expected WebKitGTK packages are present on {{ inventory_hostname }}."
+      when: webkit_pkg_installed is not defined
+      tags: identify
+
+    - name: "Display the package that will be patched"
+      ansible.builtin.debug:
+        msg: "Package {{ webkit_pkg_installed }} will be updated to version >= {{ webkitgtk_fixed_version }}."
+      tags: identify
+
+    - name: "Check if the installed version already satisfies the fix"
+      ansible.builtin.set_fact:
+        current_version: "{{ ansible_facts.packages[webkit_pkg_installed][0].version }}-{{ ansible_facts.packages[webkit_pkg_installed][0].release }}"
+      when: ansible_facts.packages[webkit_pkg_installed] is defined
+
+    - name: "Compare current version with required fixed version"
+      ansible.builtin.set_fact:
+        needs_update: "{{ (current_version is version(webkitgtk_fixed_version, '<')) }}"
+      when: current_version is defined
+
+    - name: "Skip update if package already meets required version"
+      ansible.builtin.debug:
+        msg: "Package {{ webkit_pkg_installed }} is already at version {{ current_version }} (>= {{ webkitgtk_fixed_version }}). No action needed."
+      when: not needs_update
+      tags: skip
+
+    - name: "Update WebKitGTK package to security‑fixed version"
+      ansible.builtin.yum:
+        name: "{{ webkit_pkg_installed }}"
+        state: latest
+        # `security` flag forces yum to pull only RHSA security updates (if you prefer that)
+        # security: yes
+      when: needs_update and not dry_run
+      tags: update
+
+    - name: "Do a dry‑run package update (no changes) – for testing"
+      ansible.builtin.yum:
+        name: "{{ webkit_pkg_installed }}"
+        state: latest
+        update_cache: yes
+        # yum's `--downloadonly` cannot be expressed directly; we rely on `check_mode`
+      when: needs_update and dry_run
+      check_mode: true
+      tags: dryrun
+
+    - name: "Re‑run package facts after update"
+      ansible.builtin.package_facts:
+        manager: auto
+      when: needs_update and not dry_run
+      tags: post_update
+
+    - name: "Verify that the package now meets the required version"
+      ansible.builtin.assert:
+        that:
+          - (ansible_facts.packages[webkit_pkg_installed][0].version ~ '-' ~ ansible_facts.packages[webkit_pkg_installed][0].release) is version(webkitgtk_fixed_version, '>=')
+        fail_msg: "Package {{ webkit_pkg_installed }} still does not meet the required version after update."
       when:
-        - reboot_if_needed | bool
-        - reboot_needed.rc == 0   # 0 => restart required
-        - webkit_install.changed   # only reboot if we actually updated the package
+        - verify_installation
+        - needs_update
+        - not dry_run
+      tags: verify
 
-  handlers:
-    - name: Print service restart summary
+    - name: "Restart services that may use WebKitGTK"
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: restarted
+        enabled: true
+      loop: "{{ service_restart }}"
+      when: needs_update and not dry_run
+      tags: restart
+
+  post_tasks:
+
+    - name: "Summarize remediation result"
       ansible.builtin.debug:
         msg: |
-          The following services were restarted because they link against {{ webkitgtk_pkg_name }}:
-          {{ services_to_restart.stdout_lines | default([]) }}
+          ----------------------------------------------------
+          Host: {{ inventory_hostname }}
+          Package: {{ webkit_pkg_installed | default('N/A') }}
+          Current version: {{ ansible_facts.packages[webkit_pkg_installed][0].version }}-{{ ansible_facts.packages[webkit_pkg_installed][0].release }}
+          Required minimum: {{ webkitgtk_fixed_version }}
+          Update applied: {{ needs_update | default(false) and (not dry_run) }}
+          Services restarted: {{ service_restart | join(', ') if (needs_update and not dry_run) else 'none' }}
+          ----------------------------------------------------
+      tags: summary
+
+    - name: "Fail if update was required but not applied (e.g., in dry‑run mode)"
+      ansible.builtin.fail:
+        msg: |
+          UPDATE NOT APPLIED!  The host required a WebKitGTK security update,
+          but the playbook was run in dry‑run mode or the update failed.
+          Review the log and re‑run without `dry_run: true`.
+      when:
+        - needs_update | default(false)
+        - dry_run
+      tags: final_check
