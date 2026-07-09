@@ -1,109 +1,155 @@
 ####### REASONING #######
-# The user asks for an Ansible playbook to mitigate a CVE on
-# RHEL concerning WebKitGTK out-of-bounds write. This is a
-# legitimate request (security guidance). It is not
-# disallowed. I should provide a relevant playbook that
-# updates packages, perhaps disables WebKitGTK, or applies
-# patches. Provide generic playbook. Ensure no disallowed
-# content. Provide description.
+# The user asks: "Write an ansible playbook to mitigate the
+# following CVE on all RHEL systems: 'A flaw was found in
+# WebKitGTK. Processing malicious web content can trigger an
+# out-of-bounds write due to improper checks to prevent
+# unauthorized actions, causing a break out of Web Content
+# sandbox.'"
+#
+# We need to provide an Ansible playbook. The CVE is about
+# WebKitGTK, so mitigation likely involves updating the
+# package to a version that includes the fix, possibly
+# applying security patches, or disabling the vulnerable
+# feature. We can write a generic playbook that updates the
+# package, ensures the repository is up to date, maybe uses
+# yum/dnf. Use become: true. Provide tasks: check for package,
+# update, restart services (maybe any services using
+# WebKitGTK?). Could also include a check for the CVE id.
+#
+# We need to be careful not to give disallowed content.
+# Providing code is fine. So answer with a YAML playbook. Also
+# maybe include variables, handlers. Provide a brief
+# explanation.
+#
+# Thus respond with a playbook.
 #######
 ---
-# ------------------------------------------------------------
-# Playbook: update_webkitgtk.yml
-# Purpose:  Mitigate CVE‑XXXX‑XXXX (WebKitGTK out‑of‑bounds write)
-# Platform: RHEL 7, 8, 9 (and compatible derivatives)
-# ------------------------------------------------------------
-
-- name: Ensure WebKitGTK is patched on RHEL hosts
-  hosts: webkitgtk_hosts        # <-- adjust to your inventory group / host pattern
-  become: true                  # need root privileges for package management
-  gather_facts: true
-
+- name: Mitigate WebKitGTK out‑of‑bounds‑write vulnerability (CVE‑XXXX‑YYYY)
+  hosts: all
+  become: true
   vars:
-    # --------------------------------------------------------
-    # Packages that contain the vulnerable WebKitGTK library.
-    # Adjust the list if you know of additional distro‑specific names.
-    # --------------------------------------------------------
-    webkitgtk_packages:
-      - webkit2gtk3
-      - webkit2gtk4
-      - webkitgtk3
-      - webkitgtk4
-    # Whether you want to lock the version after updating.
-    lock_version: true
-    # If you set lock_version: true, specify the plugin config file.
-    versionlock_file: /etc/yum/pluginconf.d/versionlock.conf
+    # ---------------------------------------------------------
+    # 1️⃣  Package name (as known to yum/dnf on RHEL)
+    # ---------------------------------------------------------
+    webkit_pkg_name: webkitgtk4
 
-  pre_tasks:
-    - name: Verify that the target OS is RHEL family
-      assert:
-        that:
-          - ansible_facts['os_family'] == "RedHat"
-        fail_msg: "This playbook is intended for RHEL / CentOS / Rocky / AlmaLinux."
-        success_msg: "Target OS confirmed as RedHat family."
+    # 2️⃣  Optionally enforce a security‑only yum/dnf update first
+    # ---------------------------------------------------------
+    run_full_security_update: false   # set true if you also want other pending security fixes
 
-    - name: Ensure the yum-plugin-versionlock is installed (needed for optional lock)
-      yum:
-        name: yum-plugin-versionlock
-        state: present
-      when: lock_version
-      tags: versionlock
+    # 3️⃣  Services that typically load WebKitGTK libraries.
+    #    Add/remove entries that match your environment.
+    # ---------------------------------------------------------
+    services_using_webkit:
+      - gnome-shell
+      - firefox
+      - chromium
+      - epiphany
+      - gnome-web-photo   # example, adjust as needed
 
   tasks:
-    - name: Gather currently installed WebKitGTK packages (debug)
+
+    - name: Gather package facts
       package_facts:
         manager: auto
 
-    - name: Show installed WebKitGTK packages before the update (optional)
+    # -------------------------------------------------------------------------
+    # 1️⃣  Ensure the latest WebKitGTK package is installed (or upgraded)
+    # -------------------------------------------------------------------------
+    - name: Update WebKitGTK package to the latest version from repos
+      package:
+        name: "{{ webkit_pkg_name }}"
+        state: latest
+      register: webkit_update_result
+
+    - name: Show WebKitGTK update result
       debug:
         msg: |
-          Detected WebKitGTK related packages:
-          {% for pkg in webkitgtk_packages %}
-          - {{ pkg }}: {{ ansible_facts.packages[pkg][0].version if pkg in ansible_facts.packages else 'NOT INSTALLED' }}
-          {% endfor %}
+          WebKitGTK update {{ 'changed' if webkit_update_result.changed else 'already up‑to‑date' }}.
+          Installed version: {{ ansible_facts.packages[webkit_pkg_name][0].version }}
 
-    - name: Update WebKitGTK packages to the latest security version
+    # -------------------------------------------------------------------------
+    # 2️⃣  (Optional) Run a security‑only yum/dnf update for any other CVEs
+    # -------------------------------------------------------------------------
+    - name: Run security‑only yum/dnf update (if enabled)
+      when: run_full_security_update
       yum:
-        name: "{{ webkitgtk_packages }}"
-        state: latest   # pulls the newest version from enabled repos
-        # For RHEL 8+ you could use `dnf` module; `yum` works as an alias.
-      register: yum_update
-      notify: Restart dependent services
+        name: "*"
+        security: yes
+        state: latest
+      register: security_update_result
 
-    - name: Optionally lock the newly installed version(s) to prevent downgrade
-      command: "yum versionlock add {{ item }}-{{ ansible_facts.packages[item][0].version }}-{{ ansible_facts.packages[item][0].release }}"
-      loop: "{{ webkitgtk_packages }}"
-      when:
-        - lock_version
-        - item in ansible_facts.packages
-      args:
-        warn: false
-      tags: versionlock
-
-    - name: Summarize update results
+    - name: Summarise security update run
+      when: run_full_security_update
       debug:
         msg: |
-          Update summary:
-          {% if yum_update.changed %}
-          - Packages were updated: {{ yum_update.results | map(attribute='name') | list | join(', ') }}
-          {% else %}
-          - All WebKitGTK packages were already at the latest version.
-          {% endif %}
+          Security update run {{ 'changed' if security_update_result.changed else 'no packages needed updating' }}.
+          Updated packages:
+          {{ security_update_result.results | map(attribute='name') | list }}
 
-  handlers:
-    - name: Restart dependent services
-      # Adjust the list to services that actually use WebKitGTK on your hosts.
-      # Common examples: gnome-browser, gnome-shell, electron apps, etc.
-      service:
+    # -------------------------------------------------------------------------
+    # 3️⃣  Restart services that may still be using the old library
+    # -------------------------------------------------------------------------
+    - name: Identify running services that depend on WebKitGTK
+      shell: |
+        systemctl list-units --type=service --state=running |
+        awk '{print $1}' |
+        grep -E "{{ services_using_webkit | join('|') }}"
+      register: running_kit_services
+      changed_when: false
+      check_mode: false
+
+    - name: Restart services using WebKitGTK (if any)
+      systemd:
         name: "{{ item }}"
         state: restarted
-      loop:
-        - gnome-shell
-        - gdm
-        - some-electron-app   # replace with real service names, or comment out if not needed
-      when: item in ansible_facts.services
-      ignore_errors: true   # some services may not be present; that's okay.
+        daemon_reload: true
+      loop: "{{ running_kit_services.stdout_lines }}"
+      when: running_kit_services.stdout != ''
+      async: 300
+      poll: 0
+      register: restart_jobs
 
-# ------------------------------------------------------------
-# End of playbook
-# ------------------------------------------------------------
+    - name: Wait for service restarts to finish
+      async_status:
+        jid: "{{ item.ansible_job_id }}"
+      loop: "{{ restart_jobs.results }}"
+      register: restart_results
+      until: restart_results.finished
+      retries: 30
+      delay: 5
+      when: restart_jobs is defined and restart_jobs.results | length > 0
+
+    # -------------------------------------------------------------------------
+    # 4️⃣  Verify the installed package version matches the expected patched release
+    # -------------------------------------------------------------------------
+    - name: Verify fixed version (example for RHEL 8 – adjust as needed)
+      vars:
+        # Example fixed version; replace with the exact version that contains the fix
+        # (you can fetch this from RHN or Red Hat advisory)
+        fixed_version: "2.36.5-3.el8"
+      assert:
+        that:
+          - "'{{ webkit_pkg_name }}' in ansible_facts.packages"
+          - "ansible_facts.packages[webkit_pkg_name][0].version is version(fixed_version, '>=')"
+        fail_msg: |
+          The installed WebKitGTK version ({{ ansible_facts.packages[webkit_pkg_name][0].version }}) is older
+          than the known fixed release (≥ {{ fixed_version }}).  Please verify your repos or
+          consider enabling the RHEL 8/9 security channel.
+        success_msg: |
+          WebKitGTK version {{ ansible_facts.packages[webkit_pkg_name][0].version }} meets the required
+          fixed level (≥ {{ fixed_version }}).
+
+    # -------------------------------------------------------------------------
+    # 5️⃣  Final reporting
+    # -------------------------------------------------------------------------
+    - name: Summarise mitigation outcome
+      debug:
+        msg: |
+          -------------------------------------------------------------
+          CVE mitigation completed on {{ inventory_hostname }}.
+          • WebKitGTK package: {{ webkit_pkg_name }}
+          • Updated: {{ webkit_update_result.changed }}
+          • Services restarted: {{ running_kit_services.stdout_lines | default([]) }}
+          • Security‑only update run: {{ run_full_security_update }}
+          -------------------------------------------------------------
