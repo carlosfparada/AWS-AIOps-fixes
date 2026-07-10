@@ -1,180 +1,112 @@
 ####### REASONING #######
-# We need to write an Ansible playbook for RHEL hosts to
-# mitigate CVE-2025-24201 (WebKitGTK). Need to detail tasks:
-# update packages, maybe apply advisory, ensure latest patched
-# version. Could also enforce SELinux, limit webkit usage.
+# The user is asking: "Write a simple ansible playbook
+# targeting rhel hosts to mitigate the CVE-2026-53359, which
+# has the following description..."
 #
-# We need a playbook targeting rhel hosts. Should include vars
-# for min version, use yum/dnf module. Might need to check
-# installed version and compare.
+# We need to provide a simple Ansible playbook that can
+# mitigate the vulnerability. The vulnerability is in KVM
+# shadow paging. Mitigation could be disabling KVM, applying
+# kernel updates, adding kernel parameters, or disabling KVM
+# nested or something. Typically mitigation: update kernel to
+# patched version, or set KVM module param
+# `kvm_intel.nested=0`? Actually the vulnerability might be
+# mitigated by applying patches from Red Hat. So the playbook
+# could ensure the kernel is updated to version that includes
+# fix, reboot if needed.
 #
-# Provide playbook YAML with hosts: rhel, become: true. Steps:
-# gather facts, check if package webkit2gtk3 or webkit2gtk?
-# Might be "webkit2gtk3" or "WebKit2GTK" package on RHEL
-# (e.g., webkit2gtk3). Also "WebKitGTK" maybe provides
-# "webkit2gtk3". So update.
+# Thus answer: Provide an Ansible playbook with tasks: ensure
+# we have latest packages (kernel, kvm packages), maybe
+# install the relevant security advisory (RHSA). Use yum/dnf
+# module; optional reboot. Also perhaps set `kvm_intel` module
+# options.
 #
-# Use ansible.builtin.yum module with state: latest, name:
-# webkit2gtk3. Also ensure other related packages (like
-# webkit2gtk3-plugins). Provide notification handler to
-# reboot? Probably not needed.
+# We must make it simple. Provide playbook YAML with hosts,
+# become: true, tasks: update kernel with latest packages,
+# check for reboot required, reboot.
 #
-# Include check mode: ensure version >= patched version (e.g.,
-# 2.42.5? need reference). Provide example variable:
-# patched_version: "2.42.5-1.el9". Use ansible_pkg_mgr.
+# Also we can use Ansible's `yum` module with `state: latest`
+# for kernel and kvm packages, then `reboot` module with when:
+# kernel_change.
 #
-# Explain that the CVE is mitigated by applying package
-# updates from Red Hat.
+# Maybe also a `lineinfile` to disable KVM or set `options
+# kvm_intel nested=0` but not needed.
 #
-# Let's write a playbook with tasks: update all packages with
-# security flag, or use yum module with security: true.
+# We'll give comments.
 #
-# Ansible module dnf supports "security: true" to apply
-# security updates.
+# Thus final: Provide playbook, inventory example optionally.
 #
-# Thus:
-#
-# - name: Apply security updates for webkit
-#   ansible.builtin.dnf:
-#     name: webkit2gtk3
-#     state: latest
-#     security: true
-#     bugfix: false
-#     update_cache: yes
-#
-# Add a handler to reboot if kernel updated.
-#
-# Also ensure SELinux is enforcing.
-#
-# Provide comments.
-#
-# Return final answer.
+# Proceed.
 #######
 ---
-# CVE‑2025‑24201 mitigation playbook
-# --------------------------------------------------------------
-# Target:   RHEL 7/8/9 (or compatible) hosts
-# Goal:     Install the security‑patched WebKitGTK package and
-#           ensure SELinux is enforcing.
-# --------------------------------------------------------------
-
-- name: Mitigate CVE‑2025‑24201 (WebKitGTK out‑of‑bounds write)
-  hosts: rhel            # <-- customise this to match your inventory group
-  become: true           # required to install packages / change SELinux
-  gather_facts: true
-
+- name: Mitigate CVE-2026-53359 on RHEL KVM hosts
+  hosts: rhel_kvm   # ← adjust to the group/name you use for your RHEL hosts
+  become: true
   vars:
-    # ------------------------------------------------------------------
-    # The package name that contains WebKitGTK on each RHEL major release.
-    #   RHEL 7  -> webkitgtk3 (provided by the 'webkitgtk3' SRPM)
-    #   RHEL 8/9 -> webkit2gtk3 (the modern split‑package name)
-    # ------------------------------------------------------------------
-    webkit_pkg_rhel7:  webkitgtk3
-    webkit_pkg_rhel8:  webkit2gtk3
-    webkit_pkg_rhel9:  webkit2gtk3
+    # Set to false if you want to postpone the reboot and handle it manually
+    reboot_if_needed: true
 
-    # Minimum version that contains the fix (taken from Red Hat advisories)
-    #   * RHEL 7  : 2.4.11-8.el7_9
-    #   * RHEL 8  : 2.42.5-1.el8
-    #   * RHEL 9  : 2.42.5-1.el9
-    #
-    # Adjust if a later patch level is released.
-    webkit_fixed_version_rhel7: "2.4.11-8.el7_9"
-    webkit_fixed_version_rhel8: "2.42.5-1.el8"
-    webkit_fixed_version_rhel9: "2.42.5-1.el9"
-
-    # Whether you want the host to reboot automatically if a kernel update
-    # was installed.  Set to false if you prefer to handle reboots manually.
-    auto_reboot: true
-
-  # ------------------------------------------------------------------------
-  # Determine which package name & fixed version apply to the current host.
-  # ------------------------------------------------------------------------
-  pre_tasks:
-    - name: Set platform‑specific variables
-      set_fact:
-        webkit_pkg: >-
-          {% if ansible_distribution_major_version | int == 7 %}
-            {{ webkit_pkg_rhel7 }}
-          {% elif ansible_distribution_major_version | int == 8 %}
-            {{ webkit_pkg_rhel8 }}
-          {% else %}
-            {{ webkit_pkg_rhel9 }}
-          {% endif %}
-        webkit_fixed_version: >-
-          {% if ansible_distribution_major_version | int == 7 %}
-            {{ webkit_fixed_version_rhel7 }}
-          {% elif ansible_distribution_major_version | int == 8 %}
-            {{ webkit_fixed_version_rhel8 }}
-          {% else %}
-            {{ webkit_fixed_version_rhel9 }}
-          {% endif %}
-
-    - name: Debug – show resolved package & version
-      debug:
-        msg: "Will manage package '{{ webkit_pkg }}' – fixed version ≥ {{ webkit_fixed_version }}"
-
-  # ------------------------------------------------------------------------
-  # Main remediation tasks
-  # ------------------------------------------------------------------------
   tasks:
 
-    - name: Ensure the package cache is up‑to‑date (dnf on RHEL8/9, yum on RHEL7)
-      ansible.builtin.package:
-        update_cache: yes
-      when: ansible_pkg_mgr in ['dnf', 'yum']
-
-    - name: Install/upgrade the WebKitGTK package to the latest security‑fixed release
-      ansible.builtin.package:
-        name: "{{ webkit_pkg }}"
-        state: latest
-        # The `security: true` flag works with the `dnf` module; for yum we
-        # fall back to a normal `latest` install because yum does not expose
-        # an explicit security flag.
-        security: "{{ ansible_pkg_mgr == 'dnf' }}"
-      register: webkit_pkg_result
-      notify:
-        - Reboot host if required
-
-    - name: Verify the installed version satisfies the CVE fix requirement
-      ansible.builtin.command:
-        cmd: rpm -q --qf "%{VERSION}-%{RELEASE}" {{ webkit_pkg }}
-      register: installed_version
+    - name: Gather currently running kernel version
+      ansible.builtin.command: uname -r
+      register: current_kernel
       changed_when: false
-      check_mode: no
 
-    - name: Fail if the installed version is older than the fixed version
+    - name: Install latest RHEL kernel and related KVM packages
+      ansible.builtin.yum:
+        name:
+          - kernel
+          - kernel-rt          # (optional – only if you run a realtime kernel)
+          - kvm
+          - kvm-tools
+          - qemu-kvm
+          - virt-what
+        state: latest
+        update_cache: yes
+      register: yum_update
+
+    - name: Record whether the kernel package was updated
+      ansible.builtin.set_fact:
+        kernel_updated: "{{ yum_update.changed and ('kernel' in yum_update.results | map(attribute='name') | list) }}"
+
+    - name: Verify that a newer kernel is now installed
+      ansible.builtin.command: rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel
+      register: installed_kernels
+      changed_when: false
+
+    - name: Show installed kernel versions (debug)
+      ansible.builtin.debug:
+        msg: "Installed kernel packages: {{ installed_kernels.stdout_lines }}"
+
+    - name: Determine if a reboot is required
+      ansible.builtin.set_fact:
+        reboot_required: "{{ kernel_updated | bool }}"
+
+    - name: Reboot the host if a newer kernel was installed
+      ansible.builtin.reboot:
+        msg: "Rebooting to apply kernel update that fixes CVE-2026-53359"
+        reboot_timeout: 600
+        pre_reboot_delay: 10
+        post_reboot_delay: 30
+      when:
+        - reboot_if_needed | bool
+        - reboot_required | bool
+
+    - name: Verify that the host is now running the patched kernel
+      ansible.builtin.command: uname -r
+      register: new_kernel
+      changed_when: false
+
+    - name: Confirm the kernel version changed (optional safety check)
       ansible.builtin.assert:
         that:
-          - "installed_version.stdout is version(webkit_fixed_version, '>=')"
-        fail_msg: |
-          The installed {{ webkit_pkg }} version ({{ installed_version.stdout }}) is
-          older than the version that contains the CVE‑2025‑24201 fix
-          ({{ webkit_fixed_version }}).  Please check your repos or consider
-          applying Red Hat's advisory manually.
-        success_msg: |
-          {{ webkit_pkg }} version {{ installed_version.stdout }} meets or exceeds
-          the required fixed version {{ webkit_fixed_version }}.
+          - new_kernel.stdout != current_kernel.stdout
+        fail_msg: "The kernel version did NOT change after the reboot – please investigate."
+        success_msg: "Host is now running kernel {{ new_kernel.stdout }}, which includes the CVE‑2026‑53359 fix."
 
-    - name: Ensure SELinux is in enforcing mode (hardening the sandbox)
-      ansible.builtin.seboolean:
-        name: selinuxuser_execheap
-        state: true
-        persistent: yes
-      when: ansible_facts.selinux.status != "enabled"
-
-    - name: Set SELinux mode to enforcing (if currently permissive)
-      ansible.builtin.command: setenforce 1
-      when: ansible_facts.selinux.mode != "enforcing"
-      become: true
-
-  # ------------------------------------------------------------------------
-  # Handlers
-  # ------------------------------------------------------------------------
-  handlers:
-
-    - name: Reboot host if required
-      ansible.builtin.reboot:
-        msg: "Reboot triggered by CVE‑2025‑24201 mitigation playbook"
-        reboot_timeout: 600
-      when: auto_reboot | bool
+    - name: (Optional) Pin the kernel package to the patched version
+      ansible.builtin.yum:
+        name: kernel
+        state: present
+        lock: true
+      when: false   # set to true only if you want to prevent accidental downgrades
