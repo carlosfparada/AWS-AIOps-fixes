@@ -1,112 +1,78 @@
 ####### REASONING #######
-# The user is asking: "Write a simple ansible playbook
-# targeting rhel hosts to mitigate the CVE-2026-53359, which
-# has the following description..."
-#
-# We need to provide a simple Ansible playbook that can
-# mitigate the vulnerability. The vulnerability is in KVM
-# shadow paging. Mitigation could be disabling KVM, applying
-# kernel updates, adding kernel parameters, or disabling KVM
-# nested or something. Typically mitigation: update kernel to
-# patched version, or set KVM module param
-# `kvm_intel.nested=0`? Actually the vulnerability might be
-# mitigated by applying patches from Red Hat. So the playbook
-# could ensure the kernel is updated to version that includes
-# fix, reboot if needed.
-#
-# Thus answer: Provide an Ansible playbook with tasks: ensure
-# we have latest packages (kernel, kvm packages), maybe
-# install the relevant security advisory (RHSA). Use yum/dnf
-# module; optional reboot. Also perhaps set `kvm_intel` module
-# options.
-#
-# We must make it simple. Provide playbook YAML with hosts,
-# become: true, tasks: update kernel with latest packages,
-# check for reboot required, reboot.
-#
-# Also we can use Ansible's `yum` module with `state: latest`
-# for kernel and kvm packages, then `reboot` module with when:
-# kernel_change.
-#
-# Maybe also a `lineinfile` to disable KVM or set `options
-# kvm_intel nested=0` but not needed.
-#
-# We'll give comments.
-#
-# Thus final: Provide playbook, inventory example optionally.
-#
-# Proceed.
+# The user wants a minimalist ansible playbook to run on rhel
+# group of hosts to mitigate CVE-2026-53359. Provide
+# description block. Need to include tasks to address
+# mitigation: likely update kernel package to version with
+# fix, ensure system is rebooted, maybe set specific sysctl if
+# applicable. Provide minimal playbook YAML, mention hosts:
+# rhel, become: true. Use yum module to update kernel, maybe
+# use package name "kernel" or "kernel-core". Use reboot
+# module. Use handlers. Provide comment about CVE description.
+# Provide minimal but clear. Also add tags maybe. Provide note
+# that ensure you have proper repos. Also include ansible
+# version. Provide a short README section. Provide the
+# playbook as code block.
 #######
 ---
-- name: Mitigate CVE-2026-53359 on RHEL KVM hosts
-  hosts: rhel_kvm   # ← adjust to the group/name you use for your RHEL hosts
-  become: true
+# --------------------------------------------------------------
+#  CVE‑2026‑53359 mitigation playbook
+#
+#  Description:
+#  A flaw was found in the Linux kernel's Kernel‑based Virtual Machine
+#  (KVM) x86 shadow paging mechanism. The vulnerability occurs when a
+#  host page‑directory entry (PDE) mapping is changed from within the
+#  guest, leading to an unexpected role mismatch in shadow paging.
+#  This mismatch can cause a use‑after‑free condition, which may result
+#  in system instability, denial of service, arbitrary‑code execution,
+#  or a guest‑to‑host escape.
+#
+#  Mitigation is achieved by installing the kernel version that
+#  contains the upstream fix and rebooting the host to run the new
+#  kernel.
+# --------------------------------------------------------------
+
+- name: Mitigate CVE‑2026‑53359 on RHEL hosts
+  hosts: rhel
+  become: true               # required for package management & reboot
+  gather_facts: true
+
   vars:
-    # Set to false if you want to postpone the reboot and handle it manually
-    reboot_if_needed: true
+    # The package name that provides the kernel on RHEL 8/9.
+    # Adjust if you run a different minor release (e.g., kernel-rt, kernel-uek).
+    kernel_pkg: kernel
+
+    # Minimum kernel version that includes the fix (example, adjust to real version)
+    # 9.2.0-19.el9 (replace with the exact version released by Red Hat)
+    fixed_kernel_version: "9.2.0-19.el9"
 
   tasks:
 
-    - name: Gather currently running kernel version
-      ansible.builtin.command: uname -r
-      register: current_kernel
-      changed_when: false
-
-    - name: Install latest RHEL kernel and related KVM packages
+    - name: Ensure the latest kernel package is installed
       ansible.builtin.yum:
-        name:
-          - kernel
-          - kernel-rt          # (optional – only if you run a realtime kernel)
-          - kvm
-          - kvm-tools
-          - qemu-kvm
-          - virt-what
-        state: latest
-        update_cache: yes
-      register: yum_update
+        name: "{{ kernel_pkg }}"
+        state: latest               # pulls the newest kernel from enabled repos
+      register: yum_result
+      notify: Reboot host if kernel was updated
 
-    - name: Record whether the kernel package was updated
-      ansible.builtin.set_fact:
-        kernel_updated: "{{ yum_update.changed and ('kernel' in yum_update.results | map(attribute='name') | list) }}"
-
-    - name: Verify that a newer kernel is now installed
-      ansible.builtin.command: rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel
-      register: installed_kernels
+    - name: Verify that the running kernel is the fixed version
+      ansible.builtin.command: uname -r
+      register: running_kernel
       changed_when: false
 
-    - name: Show installed kernel versions (debug)
-      ansible.builtin.debug:
-        msg: "Installed kernel packages: {{ installed_kernels.stdout_lines }}"
+    - name: Fail if the host is not running the fixed kernel after reboot
+      ansible.builtin.fail:
+        msg: |
+          The host is still running an older kernel ({{ running_kernel.stdout }})
+          which does not contain the CVE‑2026‑53359 fix.  Reboot the host and
+          verify the kernel version.
+      when: running_kernel.stdout is version(fixed_kernel_version, "<")
 
-    - name: Determine if a reboot is required
-      ansible.builtin.set_fact:
-        reboot_required: "{{ kernel_updated | bool }}"
+  handlers:
 
-    - name: Reboot the host if a newer kernel was installed
+    - name: Reboot host if kernel was updated
       ansible.builtin.reboot:
-        msg: "Rebooting to apply kernel update that fixes CVE-2026-53359"
-        reboot_timeout: 600
+        reboot_timeout: 600          # seconds to wait for the host to come back
         pre_reboot_delay: 10
-        post_reboot_delay: 30
-      when:
-        - reboot_if_needed | bool
-        - reboot_required | bool
-
-    - name: Verify that the host is now running the patched kernel
-      ansible.builtin.command: uname -r
-      register: new_kernel
-      changed_when: false
-
-    - name: Confirm the kernel version changed (optional safety check)
-      ansible.builtin.assert:
-        that:
-          - new_kernel.stdout != current_kernel.stdout
-        fail_msg: "The kernel version did NOT change after the reboot – please investigate."
-        success_msg: "Host is now running kernel {{ new_kernel.stdout }}, which includes the CVE‑2026‑53359 fix."
-
-    - name: (Optional) Pin the kernel package to the patched version
-      ansible.builtin.yum:
-        name: kernel
-        state: present
-        lock: true
-      when: false   # set to true only if you want to prevent accidental downgrades
+        post_reboot_delay: 20
+        msg: "Rebooting for CVE‑2026‑53359 kernel mitigation"
+      when: yum_result.changed
