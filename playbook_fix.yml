@@ -1,0 +1,173 @@
+---
+# ----------------------------------------------------------------------
+# Playbook: CVE‑2025‑24201 (WebKitGTK) mitigation for RHEL hosts
+# ----------------------------------------------------------------------
+# What it does
+#   • Ensures the webkit2gtk3 package is present at a version that contains
+#     the security fix.
+#   • Runs a security‑only yum/dnf update if the package is not at the
+#     required level.
+#   • Verifies the version after installation.
+#   • Records the outcome in a central log file for audit purposes.
+#
+# How to run
+#   $ ansible-playbook -i inventories/rhel.yml \
+#       cve-2025-24201-webkitgtk-mitigation.yml
+#
+# Supported platforms
+#   - RHEL 7, 8, 9 (x86_64)
+#
+# ----------------------------------------------------------------------
+
+
+- name: "Mitigate CVE‑2025‑24201 (WebKitGTK) on RHEL"
+  hosts: rhel
+  gather_facts: true
+  become: true
+  vars:
+    # --------------------------------------------------------------------
+    # Minimum safe package versions per major RHEL release
+    # --------------------------------------------------------------------
+    safe_versions:
+      # format: "<major>.{{ package_version }}"
+      "7": "2.40.5-1.el7"
+      "8": "2.42.5-1.el8"
+      "9": "2.42.5-1.el9"
+
+    # Where to write the audit line (must be writable by root)
+    audit_log: "/var/log/cve-2025-24201-webkitgtk.log"
+
+  tasks:
+
+    # ------------------------------------------------------------------
+    # 0️⃣  Validate that we’re actually on a supported RHEL major release
+    # ------------------------------------------------------------------
+    - name: "Fail fast if OS is not RHEL 7/8/9"
+      ansible.builtin.fail:
+        msg: |
+          This playbook only supports RHEL 7, 8, and 9.
+          Detected {{ ansible_distribution }} {{ ansible_distribution_major_version }}.
+      when: ansible_distribution != "RedHat" and ansible_distribution != "RedHatEnterpriseLinux"
+
+    - name: "Set fact for required package version"
+      ansible.builtin.set_fact:
+        required_pkg_version: "{{ safe_versions[ansible_distribution_major_version] }}"
+      when: safe_versions[ansible_distribution_major_version] is defined
+
+    - name: "Debug – required version"
+      ansible.builtin.debug:
+        msg: "Required webkit2gtk3 version for RHEL {{ ansible_distribution_major_version }}: {{ required_pkg_version }}"
+
+    # ------------------------------------------------------------------
+    # 1️⃣  Gather currently installed version of webkit2gtk3
+    # ------------------------------------------------------------------
+    - name: "Query installed webkit2gtk3 version"
+      ansible.builtin.command:
+        cmd: rpm -q --queryformat '%{VERSION}-%{RELEASE}' webkit2gtk3
+      register: pkg_query
+      ignore_errors: true   # -> package may be missing (unlikely but safe)
+
+    - name: "Set current version fact"
+      ansible.builtin.set_fact:
+        current_pkg_version: "{{ pkg_query.stdout if pkg_query.rc == 0 else 'not-installed' }}"
+
+    - name: "Show current version"
+      ansible.builtin.debug:
+        msg: "Current webkit2gtk3 version on {{ inventory_hostname }}: {{ current_pkg_version }}"
+
+    # ------------------------------------------------------------------
+    # 2️⃣  Decide if we need to install/upgrade
+    # ------------------------------------------------------------------
+    - name: "Determine if upgrade is required"
+      ansible.builtin.set_fact:
+        upgrade_needed: >-
+          {{
+            (current_pkg_version == 'not-installed') or
+            (current_pkg_version is version(required_pkg_version, '<'))
+          }}
+
+    - name: "Log decision (debug)"
+      ansible.builtin.debug:
+        msg: "Upgrade needed: {{ upgrade_needed }}"
+
+    # ------------------------------------------------------------------
+    # 3️⃣  Perform a security‑only update if required
+    # ------------------------------------------------------------------
+    - name: "Upgrade webkit2gtk3 to the safe version (dnf – for RHEL 8/9)"
+      ansible.builtin.dnf:
+        name: "webkit2gtk3-{{ required_pkg_version }}"
+        state: present
+        # dnf's `allow_downgrade` is useful when a host is accidentally on a newer *but* buggy build.
+        allow_downgrade: true
+        security: true          # Apply only security patches if a later version exists
+      when:
+        - upgrade_needed
+        - ansible_distribution_major_version in ['8', '9']
+      register: dnf_result
+
+    - name: "Upgrade webkit2gtk3 to the safe version (yum – for RHEL 7)"
+      ansible.builtin.yum:
+        name: "webkit2gtk3-{{ required_pkg_version }}"
+        state: present
+        security: true
+      when:
+        - upgrade_needed
+        - ansible_distribution_major_version == '7'
+      register: yum_result
+
+    # ------------------------------------------------------------------
+    # 4️⃣  Verify the final version after upgrade
+    # ------------------------------------------------------------------
+    - name: "Re‑query installed webkit2gtk3 version (post‑upgrade)"
+      ansible.builtin.command:
+        cmd: rpm -q --queryformat '%{VERSION}-%{RELEASE}' webkit2gtk3
+      register: post_query
+      failed_when: post_query.rc != 0
+
+    - name: "Set fact for post‑upgrade version"
+      ansible.builtin.set_fact:
+        final_pkg_version: "{{ post_query.stdout }}"
+
+    - name: "Assert that the final version meets the minimum requirement"
+      ansible.builtin.assert:
+        that:
+          - final_pkg_version is version(required_pkg_version, '>=')
+        fail_msg: |
+          *** CVE‑2025‑24201 mitigation FAILED on {{ inventory_hostname }} ***
+          Expected at least {{ required_pkg_version }}, got {{ final_pkg_version }}.
+        success_msg: |
+          *** CVE‑2025‑24201 mitigation SUCCESSFUL on {{ inventory_hostname }} ***
+          Installed version {{ final_pkg_version }} satisfies the requirement.
+
+    # ------------------------------------------------------------------
+    # 5️⃣  Write an audit entry (centralised log)
+    # ------------------------------------------------------------------
+    - name: "Add entry to local audit log"
+      ansible.builtin.lineinfile:
+        path: "{{ audit_log }}"
+        create: true
+        line: "{{ '%Y-%m-%d %H:%M:%S' | strftime }} {{ inventory_hostname }} {{ final_pkg_version }} {{ 'UPGRADED' if upgrade_needed else 'ALREADY_SAFE' }}"
+        state: present
+        mode: '0644'
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    # ------------------------------------------------------------------
+    # 6️⃣  (Optional) Notify a monitoring system – example using Slack webhook
+    # ------------------------------------------------------------------
+    - name: "Notify Slack channel for successful mitigations"
+      community.general.slack:
+        token: "{{ lookup('env','SLACK_BOT_TOKEN') }}"
+        channel: "#sec‑ops‑audit"
+        msg: |
+          *CVE‑2025‑24201* mitigation on `{{ inventory_hostname }}`:
+          • Final webkit2gtk3 version: `{{ final_pkg_version }}`
+          • Action: {{ 'Upgrade performed' if upgrade_needed else 'Already compliant' }}
+      when: upgrade_needed
+      delegate_to: localhost
+      run_once: false   # one message per host
+
+# ----------------------------------------------------------------------
+# END OF PLAYBOOK
+# ----------------------------------------------------------------------
