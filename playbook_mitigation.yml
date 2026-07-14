@@ -1,0 +1,54 @@
+####### REASONING #######
+# The task: Write a minimalist Ansible playbook for a group
+# "rhel" to mitigate CVE-2026-53359. Need description. What
+# mitigation? Probably updating kernel to patched version,
+# maybe adding kernel parameters to disable KVM? Usually
+# mitigation is applying patches via package update. So the
+# playbook will use yum or dnf to update kernel package to a
+# version that includes fix. Also maybe reboot.
+#
+# Minimalist: hosts: rhel, become: yes, tasks: - name: Update
+# kernel to patched version - dnf: name=kernel state=latest.
+# Then optionally - name: Reboot if kernel updated - reboot.
+#
+# Add description in playbook header comment.
+#
+# Provide variables perhaps. Keep minimal.
+#
+# Will include ansible version.
+#
+# Will output yaml code block.
+#
+# Let's produce.
+#######
+---
+# ------------------------------------------------------------
+# Playbook:  mitigate-cve-2026-53359.yml
+# Target:    rhel
+# Description:
+#   Mitigate CVE-2026-53359 (KVM x86 shadow‑paging use‑after‑free).
+#   The vulnerability is fixed in the kernel packages released
+#   by Red Hat after 2026‑05‑xx.  This playbook updates the
+#   kernel to the latest version and reboots if a newer kernel
+#   was installed.
+# ------------------------------------------------------------
+
+- name: Mitigate CVE-2026-53359 on RHEL hosts
+  hosts: rhel
+  become: true
+  gather_facts: false          # not needed for this simple task
+
+  tasks:
+
+    - name: Ensure the latest kernel package is installed
+      ansible.builtin.dnf:
+        name: kernel
+        state: latest
+      register: kernel_update
+
+    - name: Reboot host if kernel was upgraded
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+        test_command: whoami
+      when: kernel_update.changed
+      # The reboot module will wait until the host is back online.
