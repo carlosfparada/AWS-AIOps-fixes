@@ -1,0 +1,8 @@
+---
+- name: Template Playbook
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Template
+      ansible.builtin.debug:
+        msg: "This is a placeholder"
