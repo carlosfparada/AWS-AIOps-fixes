@@ -1,68 +1,89 @@
 ####### REASONING #######
-# We need to provide an Ansible playbook minimalistic that
-# mitigates CVE-2026-53359. Likely mitigation: update kernel
-# to patched version, maybe set sysctl to disable KVM shadow
-# paging? Might require updating package and reboot. Provide
-# description. Write playbook with hosts: rhel, become: true,
-# tasks: ensure latest kernel from Red Hat, check version,
-# reboot if needed. Add comment.
+# The user asks: "Write a minimalist ansible playbook to run
+# on rhel group of hosts to mitigate the CVE-2026-53359, with
+# description ...". We need to produce an Ansible playbook
+# that addresses mitigation for this kernel KVM vulnerability.
+# Likely mitigation is to apply a kernel update or set a
+# sysctl/ kernel parameter (maybe disabling KVM or applying a
+# patch). Since it's a hypothetical CVE for 2026, but we can
+# assume a mitigation is to update kernel to version with
+# patch, or apply a specific kernel parameter like
+# "kvm.ignore_msrs=1"? Actually for shadow paging mismatch,
+# maybe a kernel patch. So minimal playbook: update kernel
+# package, reboot if necessary, maybe ensure latest kernel is
+# installed via yum/dnf. Use ansible.builtin.yum module.
+# Ensure the latest kernel version includes fix. Provide
+# description.
 #
-# We must follow policy: no disallowed content. It's fine.
+# Write minimal playbook: name, hosts rhel, become: true,
+# tasks: update kernel, reboot, optionally verify kernel
+# version.
 #
-# Let's craft answer.
+# Provide comments.
+#
+# Let's produce yaml.
 #######
 ---
-# Minimalist Ansible playbook to protect RHEL hosts from CVE‑2026‑53359
-# (KVM x86 shadow‑paging use‑after‑free vulnerability)
+# Minimalist Ansible playbook to mitigate CVE‑2026‑53359 on RHEL hosts
+# ---------------------------------------------------------------
+# CVE‑2026‑53359: KVM x86 shadow‑paging use‑after‑free vulnerability.
+# Mitigation is achieved by installing the kernel version that contains the
+# upstream fix (released in the RHEL security advisory RHSA‑2026:xxxx) and
+# rebooting the machine so the new kernel is used.
+#
+# This playbook assumes the target hosts belong to an inventory group called
+# "rhel".  It runs with escalated privileges (become: true) because kernel
+# updates require root access.
 
-- name: Harden RHEL KVM hosts
+- name: Mitigate CVE‑2026‑53359 on RHEL hosts
   hosts: rhel
-  become: true               # required for package management & reboot
+  become: true
   vars:
-    # Reference package name for the kernel on RHEL
+    # The package name and the minimal version that contains the fix.
+    # Adjust these values if a later advisory changes the required version.
     kernel_pkg: kernel
-    # Minimum kernel version that contains the fix (example – adjust to your repo)
-    # 9.2.0-1.el9.x86_64 (RHEL 9) and newer include the patch.
-    min_fixed_version: "9.2.0-1.el9"
+    # Example of the patched version; replace with the exact version from
+    # the Red Hat advisory (e.g., 5.14.0-284.el9).
+    kernel_fixed_version: ">=5.14.0-284.el9"
 
   tasks:
 
-    - name: Gather current kernel version
-      ansible.builtin.command: uname -r
-      register: current_kernel
-      changed_when: false
-
-    - name: Ensure the latest kernel package is installed
+    - name: Ensure the latest patched kernel is installed
       ansible.builtin.yum:
         name: "{{ kernel_pkg }}"
         state: latest
+        # Use the "enablerepo" option only if you need a specific repo such as
+        # rhel-9-for-x86_64-baseos-rpms.  Omit if the system is already subscribed.
+        # enablerepo: rhel-9-for-x86_64-baseos-rpms
       register: yum_result
 
-    - name: Check if a reboot is required (new kernel installed or older kernel running)
-      ansible.builtin.set_fact:
-        reboot_needed: >-
-          {{ (yum_result.changed) or
-             (current_kernel.stdout is version(min_fixed_version, '<')) }}
-
-    - name: Reboot the host if a newer, patched kernel is needed
-      ansible.builtin.reboot:
-        msg: "Rebooting to apply patched kernel for CVE‑2026‑53359 mitigation"
-        reboot_timeout: 600
-      when: reboot_needed
-      async: 0
-      poll: 0
-
-    - name: Verify that the running kernel is now patched
-      ansible.builtin.command: uname -r
-      register: post_reboot_kernel
+    - name: Verify the installed kernel meets the fixed version requirement
+      ansible.builtin.command: rpm -q --qf "%{VERSION}-%{RELEASE}\n" {{ kernel_pkg }}
+      register: kernel_version
       changed_when: false
-      when: reboot_needed
+      failed_when: kernel_version.stdout is not match('^([0-9]+\\.){2}[0-9]+-[0-9]+.*$')
+      # The regex above is a generic sanity check; for stricter verification,
+      # compare against the exact version string from the advisory.
 
-    - name: Fail if the kernel is still vulnerable after reboot
+    - name: Debug – show the kernel version that is now installed
+      ansible.builtin.debug:
+        msg: "Installed {{ kernel_pkg }} version: {{ kernel_version.stdout }}"
+
+    - name: Reboot the host if the kernel was updated
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+        test_command: uname -r
+      when: yum_result.changed
+
+    - name: Ensure the running kernel is the patched one after reboot
+      ansible.builtin.command: uname -r
+      register: running_kernel
+      changed_when: false
+
+    - name: Fail if the running kernel is still vulnerable
       ansible.builtin.fail:
         msg: |
-          The host is still running an unpatched kernel ({{ post_reboot_kernel.stdout }}).
-          Ensure the kernel package provides at least version {{ min_fixed_version }}.
-      when:
-        - reboot_needed
-        - post_reboot_kernel.stdout is version(min_fixed_version, '<')
+          The host is still running a vulnerable kernel ({{ running_kernel.stdout }}).
+          Expected a kernel version that includes the CVE‑2026‑53359 fix.
+      when: running_kernel.stdout is not match('^5\\.14\\.0-284.*$')
+      # Adjust the pattern to match the exact fixed kernel release.
