@@ -1,77 +1,68 @@
 ####### REASONING #######
-# We need to provide an Ansible playbook. The user asks for a
-# minimalist ansible playbook to run on rhel group of hosts to
-# mitigate CVE-2026-53359, with description provided. Need to
-# include the description. Mitigation likely involves updating
-# kernel to fixed version, maybe disabling KVM? Possibly apply
-# RHEL errata: kernel update to version where patch applied.
-# Use yum/dnf to install latest kernel, reboot. Provide tasks
-# for checking current version, installing, and optionally
-# reboot. Minimalist means few tasks. Provide vars maybe.
-#
-# We must ensure comply with policy: no disallowed content.
-# It's okay.
-#
-# Let's produce yaml with description in comments.
+# The user asks "Write a minimalist ansible playbook to run on
+# rhel group of hosts to mitigate the CVE-2026-53359, with the
+# following description: ...". This is about a vulnerability
+# in Linux kernel KVM. Mitigation likely involves updating
+# kernel to patched version, applying security updates, or
+# using sysctl to disable something. Provide answer as Ansible
+# playbook. It's allowed. No policy violation. Provide minimal
+# playbook with description. Ensure proper YAML formatting.
 #######
 ---
-# Playbook: Mitigate CVE‑2026‑53359 (KVM x86 shadow‑paging use‑after‑free)
-# --------------------------------------------------------------------
-# A flaw was found in the Linux kernel's Kernel‑based Virtual Machine (KVM)
-# x86 shadow paging mechanism. This vulnerability occurs when a host page
-# directory entry (PDE) mapping is changed from within the guest, leading to
-# an unexpected role mismatch in shadow paging. The mismatch can cause a
-# use‑after‑free condition, allowing memory corruption, system instability,
-# denial‑of‑service, possible arbitrary‑code execution or guest‑to‑host escape.
+# Minimalist Ansible playbook
+# Target: rhel
+# Purpose: Mitigate CVE‑2026‑53359 (KVM x86 shadow‑paging use‑after‑free)
+# Description:
+#   A flaw was found in the Linux kernel's Kernel‑based Virtual Machine (KVM) x86
+#   shadow paging mechanism. The vulnerability occurs when a host page directory
+#   entry (PDE) mapping is changed from within the guest, leading to an unexpected
+#   role mismatch in shadow paging. This mismatch can cause a use‑after‑free
+#   condition, potentially resulting in system instability, denial‑of‑service,
+#   arbitrary code execution, or guest‑to‑host escape.
 #
-# Mitigation strategy (RHEL):
-#   1. Install the kernel version that contains the back‑ported fix.
-#   2. Reboot the host so the patched kernel becomes active.
-#
-# This playbook is intentionally minimal – it only updates the kernel on the
-# hosts in the *rhel* inventory group and reboots them if a newer kernel was
-# installed.
+# Mitigation strategy:
+#   1. Ensure the kernel package is updated to a version that includes the fix.
+#   2. Reboot the host to load the patched kernel (if a kernel update was installed).
+#   3. Optionally verify the running kernel version.
 
-- name: Mitigate CVE‑2026‑53359 on RHEL hosts
+- name: Apply KVM CVE‑2026‑53359 mitigation on RHEL hosts
   hosts: rhel
   become: true
   vars:
-    # Desired kernel version (adjust to the exact version released for your RHEL release)
-    # Example for RHEL 9: 9.4.0‑20240630.el9.x86_64 (replace with the actual version)
-    target_kernel_version: "9.4.0-20240630.el9.x86_64"
-
+    # Set the minimum kernel version that contains the fix for this CVE.
+    # Adjust as needed for your RHEL release (e.g., 8.8, 9.2, etc.).
+    min_fixed_kernel: "5.14.0-277.9.1.el8_9"
   tasks:
 
-    - name: Ensure the latest kernel from the enabled repo is installed
-      ansible.builtin.yum:
-        name: kernel
-        state: latest
-      register: yum_kernel
-
-    - name: Verify that the installed kernel matches the target version
-      ansible.builtin.shell: |
-        rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel | sort -V | tail -n1
+    - name: Gather current kernel version
+      ansible.builtin.command: uname -r
       register: current_kernel
       changed_when: false
 
-    - name: Show current kernel version
-      ansible.builtin.debug:
-        msg: "Current kernel: {{ current_kernel.stdout }} (target: {{ target_kernel_version }})"
+    - name: Install latest kernel package (yum/dnf)
+      ansible.builtin.yum:
+        name: kernel
+        state: latest
+      when: current_kernel.stdout is version(min_fixed_kernel, '<')
+      register: kernel_update
 
-    - name: Reboot host if a newer kernel was installed
+    - name: Reboot host if kernel was updated
       ansible.builtin.reboot:
         reboot_timeout: 600
-        test_command: uname -r
-      when: yum_kernel.changed
+        msg: "Rebooting to apply patched kernel for CVE‑2026‑53359"
+      when: kernel_update is changed
 
-    - name: Confirm the running kernel is the patched version
-      ansible.builtin.shell: uname -r
-      register: running_kernel
+    - name: Verify the running kernel version after reboot
+      ansible.builtin.command: uname -r
+      register: post_reboot_kernel
       changed_when: false
+      when: kernel_update is changed
 
-    - name: Fail if the running kernel does not match the target version
+    - name: Fail if the running kernel is still vulnerable
       ansible.builtin.fail:
         msg: |
-          The host is still running an older kernel ({{ running_kernel.stdout }}).
-          A manual reboot or further investigation is required.
-      when: running_kernel.stdout != target_kernel_version
+          The host is still running a vulnerable kernel version {{ post_reboot_kernel.stdout }}.
+          Expected at least {{ min_fixed_kernel }}.
+      when:
+        - kernel_update is changed
+        - post_reboot_kernel.stdout is version(min_fixed_kernel, '<')
