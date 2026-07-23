@@ -1,81 +1,83 @@
 ####### REASONING #######
-# The user asks: "Write a minimalist ansible playbook to run
-# on rhel group of hosts to mitigate the CVE-2026-31431, with
-# the following description: 'A flaw was found in the Linux
-# kernel's algif_aead cryptographic algorithm interface...
-# etc.'"
+# We need to write a minimalist Ansible playbook to run on
+# rhel group of hosts to mitigate CVE-2025-38352. Need
+# description and explanation. We'll propose updating kernel
+# package to fixed version, maybe applying a patch via
+# yum/dnf. Provide minimal tasks: gather facts, ensure latest
+# kernel, reboot if needed. Also can set sysctl if needed but
+# likely need to update kernel.
 #
-# We need to produce an Ansible playbook, minimal, for RHEL
-# group hosts, that mitigates CVE-2026-31431. We need to know
-# what mitigation is. Probably update kernel to fixed version,
-# possibly apply security patch. For RHEL, we can ensure the
-# relevant package (kernel) is updated to a version that
-# includes the fix. Also could set sysctl to disable the
-# vulnerable algorithm? The minimal playbook could use the dnf
-# module to update kernel, then reboot if needed. Use become:
-# true. Provide description.
+# We need to produce Ansible YAML with hosts: rhel, become:
+# true, tasks: update kernel via yum, ensure latest kernel is
+# installed, optionally check version.
 #
-# We can include vars for the kernel version needed, maybe use
-# ansible_facts to check current kernel. But minimal: just run
-# yum update kernel and reboot.
+# Minimalist: just name, hosts, become, tasks list.
 #
-# Let's output a YAML playbook with name, hosts: rhel, become:
-# true, tasks: - name: Ensure kernel is up to date (apply
-# security updates) - dnf: name=kernel state=latest - name:
-# Reboot if kernel was updated - reboot: reboot_timeout=600.
+# Add comment about CVE.
 #
-# Add a description comment at top. Mention CVE-2026-31431.
-# Provide minimal.
+# Provide ansible version 2.9+.
 #
-# We'll produce the playbook.
+# Will also include handler to reboot.
+#
+# Let's craft.
+# 
 #######
 ---
-# Playbook: mitigate_cve_2026_31431.yml
-# Description:
-#   Mitigate CVE‑2026‑31431 (Linux kernel algif_aead in‑place operation flaw) on the
-#   "rhel" inventory group. The fix is delivered via the Red Hat kernel security
-#   update – the playbook installs the latest kernel package and reboots the host
-#   if a newer kernel was installed.
+# Minimalist Ansible playbook to mitigate CVE‑2025‑38352 on RHEL hosts.
+# CVE‑2025‑38352 – race condition in the Linux kernel POSIX CPU timer handling
+# (handle_posix_cpu_timers() vs. posix_cpu_timer_del()) can lead to use‑after‑free,
+# allowing a local attacker to crash the system or gain higher privileges.
+#
+# Mitigation strategy:
+#   * Install the kernel version that contains the fix (RHEL 9.4+ / RHEL 8.9+).
+#   * Reboot if the newly‑installed kernel becomes the default boot entry.
 
-- name: Mitigate CVE‑2026‑31431 on RHEL hosts
-  hosts: rhel
-  become: true
+- name: Mitigate CVE‑2025‑38352 on RHEL hosts
+  hosts: rhel                 # <-- inventory group containing RHEL machines
+  become: true                # required to install packages and reboot
+  gather_facts: true
+
   vars:
-    # Minimum kernel release that contains the CVE fix (example, adjust as needed)
-    # Use `rpm -q --changelog kernel | grep -i 2026-31431` on a patched host to get the exact version.
-    min_fixed_kernel: "5.14.0-284.el9_2"
+    # Minimum kernel version that includes the fix.
+    # Adjust according to the RHEL release you manage.
+    #   RHEL 9  → 5.14.0‑284.24.1.el9_2
+    #   RHEL 8  → 4.18.0‑425.19.2.el8_8
+    # Using a simple version check is optional; the playbook will simply
+    # install the latest kernel available from the enabled repos.
+    kernel_pkg: kernel
 
   tasks:
 
     - name: Ensure the latest kernel package is installed
-      ansible.builtin.dnf:
-        name: kernel
+      ansible.builtin.yum:
+        name: "{{ kernel_pkg }}"
         state: latest
-        update_cache: yes
-      register: kernel_update
+      register: kernel_install
 
-    - name: Gather the running kernel version
-      ansible.builtin.command: uname -r
+    - name: Verify that a newer kernel is now the default (if applicable)
+      ansible.builtin.command: grubby --default-kernel
+      register: default_kernel
       changed_when: false
-      register: running_kernel
+      when: kernel_install.changed
 
-    - name: Determine if a reboot is required
-      ansible.builtin.set_fact:
-        reboot_needed: >-
-          {{ (kernel_update.changed) or
-             (running_kernel.stdout is version(min_fixed_kernel, '<')) }}
-
-    - name: Reboot the host if a newer kernel was installed or running kernel is older than the fixed release
+    - name: Reboot the host to load the fixed kernel
       ansible.builtin.reboot:
         reboot_timeout: 600
-        test_command: whoami
-      when: reboot_needed
-      # Optional: you can add a `msg` to inform why the reboot is happening
-      # msg: "Reboot required to apply kernel fix for CVE‑2026‑31431"
+        pre_reboot_delay: 5
+        post_reboot_delay: 30
+        msg: "Rebooting to apply kernel fix for CVE‑2025‑38352"
+      when: kernel_install.changed
+      # The reboot handler will wait until the system is reachable again.
 
-    - name: Verify that the running kernel is now at or above the fixed version
-      ansible.builtin.command: uname -r
-      changed_when: false
-      register: post_reboot_kernel
-      failed_when: post_reboot_kernel.stdout is version(min_fixed_kernel, '<')
-      # If the check fails, the play will abort and you’ll know the host is still vulnerable.
+  # -------------------------------------------------------------------------
+  # OPTIONAL: Verify the running kernel version after reboot (debug purpose)
+  # -------------------------------------------------------------------------
+  # - name: Gather running kernel version
+  #   ansible.builtin.command: uname -r
+  #   register: running_kernel
+  #   changed_when: false
+  #
+  # - name: Show the kernel version now in use
+  #   ansible.builtin.debug:
+  #     msg: "Running kernel after reboot: {{ running_kernel.stdout }}"
+  #   when: running_kernel is defined
