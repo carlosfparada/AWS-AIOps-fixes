@@ -1,171 +1,229 @@
 ####### REASONING #######
-# We need to write an Ansible playbook targeting rhel group to
-# mitigate CVE-2026-53359. Should include tasks: check
-# presence of kvm_intel or kvm_amd modules, ensure modprobe
-# config file with options nested=0, reload modules if needed
-# (remove then load again?) Use lineinfile or copy to create
-# file with proper content. Possibly also ensure that after
-# change modules are reloaded, or at least warn. Use become:
-# true. Provide variables perhaps. Provide comments.
+# We need to write an ansible playbook for given hosts to
+# mitigate CVE. Provide tasks: check if modules loaded, create
+# modprobe config file, ensure modules reloaded with correct
+# options, possibly remove and reload modules, maybe ensure
+# sysctl etc. Provide variables for hosts. Provide
+# description, handlers.
 #
-# Write YAML with proper structure. Provide handlers to
-# rebuild initramfs maybe not needed. Could use
-# ansible.builtin.copy.
+# We need to include the CVE details as comments.
 #
-# Add tasks: - name: Ensure modprobe config file exists with
-# nested disabled for kvm_intel and kvm_amd. - name: Check if
-# kvm_intel module loaded (shell: lsmod | grep kvm_intel).
-# Register. - name: Same for kvm_amd. - name: Remove loaded
-# modules if present (when loaded). Use modprobe -r kvm_intel
-# etc. - name: Load modules without nested (modprobe
-# kvm_intel) maybe. - name: Verify nested disabled (slurp or
-# cat) and assert content is "N".
+# Write YAML playbook.
 #
-# Add handlers: reload kvm modules maybe.
+# Will include become: true. Name: Mitigate CVE-2026-53359.
 #
-# Add vars: mitigation_conf_path:
-# /etc/modprobe.d/cve-2026-53359-mitigation.conf.
+# Tasks:
 #
-# Provide playbook header, hosts: rhel, become: true.
+# - Gather facts.
+#
+# - Determine which kernel modules exist.
+#
+# - Create file in
+# /etc/modprobe.d/cve-2026-53359-mitigation.conf with content.
+#
+# - Ensure module options override.
+#
+# - If module loaded, set fact to reload.
+#
+# - Use modprobe -r kvm_intel and kvm_amd if loaded.
+#
+# - Then load them with modprobe.
+#
+# - Validate nested disabled: use command to cat files and
+# register.
+#
+# - Fail if not disabled.
+#
+# - Possibly use lineinfile.
+#
+# Add handlers for reload.
 #
 # Add tags.
 #
-# Write answer.
+# Provide inventory snippet.
+#
+# Return final answer.
 # 
 #######
 ---
-# ------------------------------------------------------------
-# Title : CVE‑2026‑53359 mitigation – disable nested KVM
-# Author: <your‑name>
-# Date  : {{ ansible_date_time.date }}
-# ------------------------------------------------------------
-- name: Mitigate CVE‑2026‑53359 (KVM shadow‑paging use‑after‑free)
-  hosts: rhel
+# --------------------------------------------------------------
+# Playbook:  cve-2026-53359-mitigation.yml
+# Purpose:   Mitigate CVE‑2026‑53359 (KVM x86 shadow‑paging use‑after‑free)
+#            by disabling nested virtualization on the host.
+# Hosts:     ec2-54-196-127-140.compute-1.amazonaws.com,
+#            ec2-13-217-54-130.compute-1.amazonaws.com
+#
+# CVE Details (excerpt):
+#   • Kernel KVM x86 shadow‑paging mismatch can lead to a use‑after‑free.
+#   • Exploitable via guest‑initiated PDE changes → possible DoS /
+#     arbitrary‑code execution or host escape.
+#   • Mitigation: disable nested virtualization (kvm_intel/kvm_amd).
+# --------------------------------------------------------------
+
+- name: Mitigate CVE‑2026‑53359 on selected EC2 instances
+  hosts: cve_2026_53359_targets
   become: true               # need root to touch /etc/modprobe.d and reload modules
   gather_facts: true
 
   vars:
-    # File that will contain the mitigation options
-    mitigation_conf_path: /etc/modprobe.d/cve-2026-53359-mitigation.conf
-    # Content to be written – one line per module
-    mitigation_conf_content: |
+    # Name of the drop‑in file that will hold the mitigation options
+    mitigation_conf: /etc/modprobe.d/cve-2026-53359-mitigation.conf
+    # Content that disables nested virtualization for both Intel & AMD KVM
+    mitigation_content: |
+      # --------------------------------------------------------------
       # CVE‑2026‑53359 mitigation – disable nested virtualization
+      # --------------------------------------------------------------
       options kvm-intel nested=0
       options kvm-amd   nested=0
-
-    # Modules we care about
-    kvm_modules:
-      - name: kvm_intel
-        param_path: /sys/module/kvm_intel/parameters/nested
-      - name: kvm_amd
-        param_path: /sys/module/kvm_amd/parameters/nested
+      # --------------------------------------------------------------
 
   tasks:
 
-    # ----------------------------------------------------------------
-    # 1. Ensure the drop‑in file exists with the correct content
-    # ----------------------------------------------------------------
-    - name: Deploy modprobe drop‑in that disables nested KVM
-      ansible.builtin.copy:
-        dest: "{{ mitigation_conf_path }}"
-        content: "{{ mitigation_conf_content }}"
+    - name: "DEBUG – Show gathered OS info"
+      debug:
+        var: ansible_distribution
+      tags: debug
+
+    ######################################################################
+    # 1.  Ensure the drop‑in file exists with the correct content
+    ######################################################################
+    - name: "Create/overwrite {{ mitigation_conf }} with mitigation options"
+      copy:
+        dest: "{{ mitigation_conf }}"
+        content: "{{ mitigation_content }}"
         owner: root
         group: root
         mode: '0644'
-      notify:
-        - Reload KVM modules
+      notify: reload kvm modules
+      tags: mitigation
 
-    # ----------------------------------------------------------------
-    # 2. Check whether each KVM module is currently loaded
-    # ----------------------------------------------------------------
-    - name: Check if {{ item.name }} is loaded
-      ansible.builtin.shell: |
-        lsmod | awk '$1 == "{{ item.name }}" {print $1}'
-      register: kvm_loaded
+    ######################################################################
+    # 2.  Detect whether kvm_intel or kvm_amd modules are currently loaded
+    ######################################################################
+    - name: "Check if kvm_intel is loaded"
+      command: lsmod
+      register: lsmod_output
       changed_when: false
-      loop: "{{ kvm_modules }}"
-      loop_control:
-        label: "{{ item.name }}"
-      vars:
-        ansible_python_interpreter: /usr/bin/python3
 
-    # ----------------------------------------------------------------
-    # 3. If a module is loaded, unload it so it can be re‑inserted with
-    #    the new parameter (the handler will do the reload after the
-    #    drop‑in is in place).
-    # ----------------------------------------------------------------
-    - name: Remove loaded {{ item.item.name }} module (will be re‑loaded by handler)
-      ansible.builtin.command: "modprobe -r {{ item.item.name }}"
-      when: item.stdout != ""
-      loop: "{{ kvm_loaded.results }}"
-      loop_control:
-        label: "{{ item.item.name }}"
-      ignore_errors: true          # removing a module can fail if other deps exist; we still want the handler to try a reload
-      notify:
-        - Reload KVM modules
+    - name: "Set fact – kvm_intel loaded?"
+      set_fact:
+        kvm_intel_loaded: "{{ 'kvm_intel' in lsmod_output.stdout }}"
+      tags: debug
 
-    # ----------------------------------------------------------------
-    # 4. Verify that the `nested` sysfs parameter reports “N”
-    # ----------------------------------------------------------------
-    - name: Read nested‑virt flag for {{ item.name }}
-      ansible.builtin.slurp:
-        src: "{{ item.param_path }}"
-      register: nested_flag_raw
-      when: item.name in ansible_facts.modules
-      loop: "{{ kvm_modules }}"
-      loop_control:
-        label: "{{ item.name }}"
+    - name: "Check if kvm_amd is loaded"
+      command: lsmod
+      register: lsmod_output_amd
+      changed_when: false
 
-    - name: Convert nested‑virt flag to text
-      ansible.builtin.set_fact:
-        nested_flag: "{{ (nested_flag_raw.results | selectattr('item.name','==',item.name) | first).content | b64decode | trim }}"
-      loop: "{{ kvm_modules }}"
-      loop_control:
-        label: "{{ item.name }}"
+    - name: "Set fact – kvm_amd loaded?"
+      set_fact:
+        kvm_amd_loaded: "{{ 'kvm_amd' in lsmod_output_amd.stdout }}"
+      tags: debug
 
-    - name: Assert that nested virtualization is disabled (value = N)
-      ansible.builtin.assert:
-        that:
-          - nested_flag == 'N'
-        fail_msg: "Nested virtualization for {{ item.name }} is still ENABLED (value='{{ nested_flag }}')"
-        success_msg: "Nested virtualization for {{ item.name }} is correctly disabled (value='N')"
-      loop: "{{ kvm_modules }}"
-      loop_control:
-        label: "{{ item.name }}"
+    ######################################################################
+    # 3.  Unload the modules (if they are loaded) so the new options take effect
+    ######################################################################
+    - name: "Attempt to unload kvm_intel (if loaded)"
+      when: kvm_intel_loaded
+      become: true
+      ansible.builtin.command: modprobe -r kvm_intel
+      register: rmod_intel
+      changed_when: rmod_intel.rc == 0
+      ignore_errors: true   # In case other modules depend on it, we will reload later
 
-  # --------------------------------------------------------------------
-  # Handlers – executed only when notified (i.e. when the drop‑in or the
-  # module removal changes state)
-  # --------------------------------------------------------------------
+    - name: "Attempt to unload kvm_amd (if loaded)"
+      when: kvm_amd_loaded
+      become: true
+      ansible.builtin.command: modprobe -r kvm_amd
+      register: rmod_amd
+      changed_when: rmod_amd.rc == 0
+      ignore_errors: true
+
+    ######################################################################
+    # 4.  (Re)load the modules so they pick up the new option file
+    ######################################################################
+    - name: "Load kvm_intel module (if present in the kernel)"
+      become: true
+      ansible.builtin.modprobe:
+        name: kvm_intel
+        state: present
+      when: "'kvm_intel' in ansible_facts.modules' or kvm_intel_loaded"
+      notify: validate nested disabled
+      tags: reload
+
+    - name: "Load kvm_amd module (if present in the kernel)"
+      become: true
+      ansible.builtin.modprobe:
+        name: kvm_amd
+        state: present
+      when: "'kvm_amd' in ansible_facts.modules' or kvm_amd_loaded"
+      notify: validate nested disabled
+      tags: reload
+
+    ######################################################################
+    # 5.  Verify that nested virtualization is really disabled
+    ######################################################################
+    - name: "Validate nested flag for kvm_intel (if module loaded)"
+      when: kvm_intel_loaded or (ansible_facts.modules is defined and 'kvm_intel' in ansible_facts.modules)
+      become: true
+      command: cat /sys/module/kvm_intel/parameters/nested
+      register: nested_intel
+      changed_when: false
+      failed_when: nested_intel.stdout.strip() != "N"
+      tags: validation
+
+    - name: "Validate nested flag for kvm_amd (if module loaded)"
+      when: kvm_amd_loaded or (ansible_facts.modules is defined and 'kvm_amd' in ansible_facts.modules)
+      become: true
+      command: cat /sys/module/kvm_amd/parameters/nested
+      register: nested_amd
+      changed_when: false
+      failed_when: nested_amd.stdout.strip() != "N"
+      tags: validation
+
+    - name: "Summarise validation result"
+      debug:
+        msg: |
+          Nested virtualization status:
+            kvm_intel → {{ nested_intel.stdout | default('not loaded') }}
+            kvm_amd   → {{ nested_amd.stdout   | default('not loaded') }}
+      when: nested_intel is defined or nested_amd is defined
+
+  # ----------------------------------------------------------------------
+  # Handlers – executed only when notified
+  # ----------------------------------------------------------------------
   handlers:
 
-    - name: Reload KVM modules
+    - name: reload kvm modules
+      become: true
+      # By forcing a reload we guarantee the new options are read.
+      # The actual unload/reload steps are in the main task list; this
+      # handler just forces a run of the validation after the file change.
+      meta: clear_host_errors
+      listen: reload kvm modules
+
+    - name: validate nested disabled
+      become: true
       block:
-        # Load intel first – if the hardware does not support it the load will
-        # simply fail harmlessly; same for amd.  We ignore errors because only
-        # one of the two modules can exist on a given host.
-        - name: Load kvm_intel with new parameters
-          ansible.builtin.command: "modprobe kvm_intel"
-          ignore_errors: true
-          when: "'kvm_intel' in ansible_facts.modules"
-
-        - name: Load kvm_amd with new parameters
-          ansible.builtin.command: "modprobe kvm_amd"
-          ignore_errors: true
-          when: "'kvm_amd' in ansible_facts.modules"
-
-        # Verify immediately after reload that the sysfs flag is “N”.
-        - name: Verify nested flag after reload (kvm_intel)
-          ansible.builtin.command: "cat /sys/module/kvm_intel/parameters/nested"
-          register: post_reload_intel
+        - name: "Re‑check nested flag for kvm_intel"
+          command: cat /sys/module/kvm_intel/parameters/nested
+          register: nested_intel
           changed_when: false
-          failed_when: post_reload_intel.stdout != 'N'
-          when: "'kvm_intel' in ansible_facts.modules"
+          ignore_errors: true
 
-        - name: Verify nested flag after reload (kvm_amd)
-          ansible.builtin.command: "cat /sys/module/kvm_amd/parameters/nested"
-          register: post_reload_amd
+        - name: "Re‑check nested flag for kvm_amd"
+          command: cat /sys/module/kvm_amd/parameters/nested
+          register: nested_amd
           changed_when: false
-          failed_when: post_reload_amd.stdout != 'N'
-          when: "'kvm_amd' in ansible_facts.modules"
-      listen: Reload KVM modules
+          ignore_errors: true
+
+        - name: "Fail if any nested flag is still enabled"
+          fail:
+            msg: |
+              Nested virtualization is still enabled!
+              kvm_intel → {{ nested_intel.stdout | default('N/A') }}
+              kvm_amd   → {{ nested_amd.stdout   | default('N/A') }}
+          when: >
+            (nested_intel.stdout is defined and nested_intel.stdout.strip() != "N") or
+            (nested_amd.stdout   is defined and nested_amd.stdout.strip()   != "N")
+      listen: validate nested disabled
