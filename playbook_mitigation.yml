@@ -1,107 +1,171 @@
 ####### REASONING #######
-# We need to write a minimalist Ansible playbook targeting
-# rhel group to mitigate CVE-2026-53359. We need to think
-# about mitigation: likely updating kernel to patched version,
-# applying Red Hat security advisory, ensuring latest kernel
-# installed, maybe reboot.
+# We need to write an Ansible playbook targeting rhel group to
+# mitigate CVE-2026-53359. Should include tasks: check
+# presence of kvm_intel or kvm_amd modules, ensure modprobe
+# config file with options nested=0, reload modules if needed
+# (remove then load again?) Use lineinfile or copy to create
+# file with proper content. Possibly also ensure that after
+# change modules are reloaded, or at least warn. Use become:
+# true. Provide variables perhaps. Provide comments.
 #
-# Provide playbook with tasks: gather facts, ensure latest
-# kernel installed via yum/dnf, check for version, optionally
-# reboot if needed. Use minimal tasks.
+# Write YAML with proper structure. Provide handlers to
+# rebuild initramfs maybe not needed. Could use
+# ansible.builtin.copy.
 #
-# Include comments and references.
+# Add tasks: - name: Ensure modprobe config file exists with
+# nested disabled for kvm_intel and kvm_amd. - name: Check if
+# kvm_intel module loaded (shell: lsmod | grep kvm_intel).
+# Register. - name: Same for kvm_amd. - name: Remove loaded
+# modules if present (when loaded). Use modprobe -r kvm_intel
+# etc. - name: Load modules without nested (modprobe
+# kvm_intel) maybe. - name: Verify nested disabled (slurp or
+# cat) and assert content is "N".
 #
-# Use ansible version, become: true.
+# Add handlers: reload kvm modules maybe.
 #
-# Provide example inventory? Not needed.
+# Add vars: mitigation_conf_path:
+# /etc/modprobe.d/cve-2026-53359-mitigation.conf.
 #
-# Write playbook YAML minimal.
+# Provide playbook header, hosts: rhel, become: true.
 #
-# Potential use of package module with name: kernel state:
-# latest. Use reboot module.
+# Add tags.
 #
-# Add condition: only reboot if kernel was updated.
-#
-# We can register result, then condition.
-#
-# Provide minimal.
-#
-# Let's craft answer.
+# Write answer.
+# 
 #######
 ---
-# File: mitigate-cve-2026-53359.yml
-# Purpose: Install the patched RHEL kernel that fixes the KVM x86 shadow‑paging
-#          vulnerability (CVE‑2026‑53359) and reboot if a newer kernel was
-#          installed.
-# Target: hosts in the inventory group "rhel"
-# --------------------------------------------------------------
-
+# ------------------------------------------------------------
+# Title : CVE‑2026‑53359 mitigation – disable nested KVM
+# Author: <your‑name>
+# Date  : {{ ansible_date_time.date }}
+# ------------------------------------------------------------
 - name: Mitigate CVE‑2026‑53359 (KVM shadow‑paging use‑after‑free)
   hosts: rhel
-  become: true            # needed for package management & reboot
+  become: true               # need root to touch /etc/modprobe.d and reload modules
   gather_facts: true
 
   vars:
-    # Red‑Hat Advisory (example): RHSA‑2026:xxxx – kernel‑{version}
-    # Adjust the package name if you run a different RHEL stream (e.g. AppStream).
-    kernel_pkg: kernel
+    # File that will contain the mitigation options
+    mitigation_conf_path: /etc/modprobe.d/cve-2026-53359-mitigation.conf
+    # Content to be written – one line per module
+    mitigation_conf_content: |
+      # CVE‑2026‑53359 mitigation – disable nested virtualization
+      options kvm-intel nested=0
+      options kvm-amd   nested=0
+
+    # Modules we care about
+    kvm_modules:
+      - name: kvm_intel
+        param_path: /sys/module/kvm_intel/parameters/nested
+      - name: kvm_amd
+        param_path: /sys/module/kvm_amd/parameters/nested
 
   tasks:
 
-    - name: Install the latest kernel from the enabled repos
-      ansible.builtin.package:
-        name: "{{ kernel_pkg }}"
-        state: latest
-      register: kernel_update
-      # The package module works with yum, dnf and microdnf on all RHEL versions.
+    # ----------------------------------------------------------------
+    # 1. Ensure the drop‑in file exists with the correct content
+    # ----------------------------------------------------------------
+    - name: Deploy modprobe drop‑in that disables nested KVM
+      ansible.builtin.copy:
+        dest: "{{ mitigation_conf_path }}"
+        content: "{{ mitigation_conf_content }}"
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - Reload KVM modules
 
-    - name: Ensure the latest kernel is set as the default boot entry
-      ansible.builtin.command: |
-        grub2-set-default 0
-      when: kernel_update.changed
-      # In RHEL 9+ grub2-set-default 0 points to the first (newest) entry.
-      # No restart of the bootloader is required; just a reboot later.
-
-    - name: Reboot the host if a new kernel was installed
-      ansible.builtin.reboot:
-        reboot_timeout: 600          # seconds to wait for the node to come back
-        post_reboot_delay: 30        # give services a bit of time to start
-        test_command: uptime         # simple check that the host is up
-      when: kernel_update.changed
-      # The reboot will only happen when the kernel package was upgraded,
-      # avoiding unnecessary restarts.
-
-    - name: Verify that the running kernel contains the fix
+    # ----------------------------------------------------------------
+    # 2. Check whether each KVM module is currently loaded
+    # ----------------------------------------------------------------
+    - name: Check if {{ item.name }} is loaded
       ansible.builtin.shell: |
-        uname -r
-      register: running_kernel
+        lsmod | awk '$1 == "{{ item.name }}" {print $1}'
+      register: kvm_loaded
       changed_when: false
+      loop: "{{ kvm_modules }}"
+      loop_control:
+        label: "{{ item.name }}"
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
 
-    - name: Display the kernel version after remediation
-      ansible.builtin.debug:
-        msg: "Host {{ inventory_hostname }} is now running kernel {{ running_kernel.stdout }}"
+    # ----------------------------------------------------------------
+    # 3. If a module is loaded, unload it so it can be re‑inserted with
+    #    the new parameter (the handler will do the reload after the
+    #    drop‑in is in place).
+    # ----------------------------------------------------------------
+    - name: Remove loaded {{ item.item.name }} module (will be re‑loaded by handler)
+      ansible.builtin.command: "modprobe -r {{ item.item.name }}"
+      when: item.stdout != ""
+      loop: "{{ kvm_loaded.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      ignore_errors: true          # removing a module can fail if other deps exist; we still want the handler to try a reload
+      notify:
+        - Reload KVM modules
 
-# -------------------------------------------------------------------------
-# How to use
-# -------------------------------------------------------------------------
-# 1. Save this file (e.g. mitigate-cve-2026-53359.yml).
-# 2. Ensure your inventory has a group called "rhel" with the target servers.
-# 3. Run:
-#        ansible-playbook -i inventory.yaml mitigate-cve-2026-53359.yml
-#
-# The playbook will:
-#   • Pull the most recent kernel from the configured repositories (the
-#     version that contains the CVE fix released by Red Hat).
-#   • Set it as the default boot entry.
-#   • Reboot only when an upgrade occurred.
-#   • Print the final kernel version for verification.
-#
-# -------------------------------------------------------------------------
-# References
-# -------------------------------------------------------------------------
-# • Red Hat Security Advisory for CVE‑2026‑53359 (example):
-#   https://access.redhat.com/security/security-updates/#/cve/CVE-2026-53359
-# • Official Red Hat Kernel Update Documentation:
-#   https://access.redhat.com/articles/11258
-# • Ansible `package`, `reboot` and `shell` modules:
-#   https://docs.ansible.com/ansible/latest/collections/ansible/builtin/
+    # ----------------------------------------------------------------
+    # 4. Verify that the `nested` sysfs parameter reports “N”
+    # ----------------------------------------------------------------
+    - name: Read nested‑virt flag for {{ item.name }}
+      ansible.builtin.slurp:
+        src: "{{ item.param_path }}"
+      register: nested_flag_raw
+      when: item.name in ansible_facts.modules
+      loop: "{{ kvm_modules }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Convert nested‑virt flag to text
+      ansible.builtin.set_fact:
+        nested_flag: "{{ (nested_flag_raw.results | selectattr('item.name','==',item.name) | first).content | b64decode | trim }}"
+      loop: "{{ kvm_modules }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Assert that nested virtualization is disabled (value = N)
+      ansible.builtin.assert:
+        that:
+          - nested_flag == 'N'
+        fail_msg: "Nested virtualization for {{ item.name }} is still ENABLED (value='{{ nested_flag }}')"
+        success_msg: "Nested virtualization for {{ item.name }} is correctly disabled (value='N')"
+      loop: "{{ kvm_modules }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+  # --------------------------------------------------------------------
+  # Handlers – executed only when notified (i.e. when the drop‑in or the
+  # module removal changes state)
+  # --------------------------------------------------------------------
+  handlers:
+
+    - name: Reload KVM modules
+      block:
+        # Load intel first – if the hardware does not support it the load will
+        # simply fail harmlessly; same for amd.  We ignore errors because only
+        # one of the two modules can exist on a given host.
+        - name: Load kvm_intel with new parameters
+          ansible.builtin.command: "modprobe kvm_intel"
+          ignore_errors: true
+          when: "'kvm_intel' in ansible_facts.modules"
+
+        - name: Load kvm_amd with new parameters
+          ansible.builtin.command: "modprobe kvm_amd"
+          ignore_errors: true
+          when: "'kvm_amd' in ansible_facts.modules"
+
+        # Verify immediately after reload that the sysfs flag is “N”.
+        - name: Verify nested flag after reload (kvm_intel)
+          ansible.builtin.command: "cat /sys/module/kvm_intel/parameters/nested"
+          register: post_reload_intel
+          changed_when: false
+          failed_when: post_reload_intel.stdout != 'N'
+          when: "'kvm_intel' in ansible_facts.modules"
+
+        - name: Verify nested flag after reload (kvm_amd)
+          ansible.builtin.command: "cat /sys/module/kvm_amd/parameters/nested"
+          register: post_reload_amd
+          changed_when: false
+          failed_when: post_reload_amd.stdout != 'N'
+          when: "'kvm_amd' in ansible_facts.modules"
+      listen: Reload KVM modules
