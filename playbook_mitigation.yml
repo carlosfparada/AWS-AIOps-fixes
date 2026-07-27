@@ -1,160 +1,206 @@
 ####### REASONING #######
-# We need to write an Ansible playbook targeting those two
-# hosts, mitigating CVE by disabling nested virtualization via
-# modprobe config file. Must not use block structure on
-# handlers. So we can have a handler defined without block?
-# Usually handlers are defined as tasks with notify and then
-# in handlers we can have tasks. Avoid block. Provide playbook
-# with tasks: check if kvm_intel or kvm_amd loaded, remove
-# with modprobe -r; create file
-# /etc/modprobe.d/cve-2026-53359-mitigation.conf with
-# appropriate contents; ensure sysfs parameters set? Actually
-# after modprobe removal and file addition need to reload?
-# Possibly run modprobe -r then modprobe -a? Since disabling
-# nested param requires module reload. So we can have tasks:
-# gather facts, check modules loaded via shell command `lsmod
-# | grep -E '^kvm_intel|kvm_amd'`. Use register. Then
-# conditionally run modprobe -r. Then copy file using
-# lineinfile or copy. Then reload modules: modprobe -r and
-# modprobe again? Might be okay.
+# We need to write an Ansible playbook meeting constraints:
 #
-# Write playbook with hosts: list of hosts, become: true. Use
-# tasks.
+# - target the given list of hosts (two hostnames). Should be
+# defined in inventory or hosts: line with them.
+# - Must NOT use block structure on handlers. So we can have
+# handlers but not block.
+# - Must use ignore_errors: true to make playbook always
+# succeed. So tasks should have ignore_errors: true (maybe
+# each task). Or we can set at play level? ignore_errors is
+# per task. We'll add it to each task.
 #
-# Handlers: maybe need restart kvm modules? We'll define a
-# handler to reload modules but not using block. Eg:
+# - Mitigation: create a file in /etc/modprobe.d/ with options
+# to disable nested virtualization for kvm_intel and kvm_amd.
+# Use lineinfile or copy.
 #
-# handlers:
-#  - name: reload kvm modules
-#    command: modprobe -r kvm_intel kvm_amd && modprobe
+# - Use lsmod to see if loaded; if loaded, remove with
+# modprobe -r. Use command module with when condition based on
+# presence of module. We can use 'shell: lsmod | grep -q
+# "^kvm_intel"' etc.
+#
+# - Validate reading files to ensure nested disabled; we could
+# use command to cat and assert.
+#
+# - Use ignore_errors: true.
+#
+# - No block in handlers—just simple 'notify' to reload?
+# Possibly restart system or reload modules. But we can use
+# 'modprobe -r' and then ensure file present.
+#
+# - Use become: true for privilege escalation.
+#
+# - Provide a playbook YAML with tasks and handlers.
+#
+# Let's craft:
+#
+# ```
+# - name: Mitigate CVE-2026-53359 by disabling nested
+# virtualization
+#   hosts:
+#     - ec2-54-237-28-92.compute-1.amazonaws.com
+#     - ec2-34-230-26-219.compute-1.amazonaws.com
+#   become: true
+#   gather_facts: false
+#
+#   vars:
+#     mitigation_conf:
+# /etc/modprobe.d/cve-2026-53359-mitigation.conf
+#     mitigation_content: |
+#       options kvm-intel nested=0
+#       options kvm-amd nested=0
+#
+#   tasks:
+#     - name: Ensure mitigation config file is present
+#       copy:
+#         dest: "{{ mitigation_conf }}"
+#         content: "{{ mitigation_content }}"
+#         owner: root
+#         group: root
+#         mode: '0644'
+#       notify: Reload kvm modules
+#       ignore_errors: true
+#
+#     - name: Check if kvm_intel module is loaded
+#       command: lsmod
+#       register: lsmod_output
+#       changed_when: false
+#       ignore_errors: true
+#
+#     - name: Remove kvm_intel module if loaded
+#       command: modprobe -r kvm_intel
+#       when: lsmod_output.stdout is search('^kvm_intel')
+#       ignore_errors: true
+#
+#     - name: Check if kvm_amd module is loaded
+#       command: lsmod
+#       register: lsmod_output_amd
+#       changed_when: false
+#       ignore_errors: true
+#
+#     - name: Remove kvm_amd module if loaded
+#       command: modprobe -r kvm_amd
+#       when: lsmod_output_amd.stdout is search('^kvm_amd')
+#       ignore_errors: true
+#
+#     - name: Verify nested virtualization is disabled for
+# kvm_intel
+#       command: cat /sys/module/kvm_intel/parameters/nested
+#       register: nested_intel
+#       failed_when: nested_intel.stdout != "N"
+#       changed_when: false
+#       ignore_errors: true
+#
+#     - name: Verify nested virtualization is disabled for
+# kvm_amd
+#       command: cat /sys/module/kvm_amd/parameters/nested
+#       register: nested_amd
+#       failed_when: nested_amd.stdout != "N"
+#       changed_when: false
+#       ignore_errors: true
+#
+#   handlers:
+#     - name: Reload kvm modules
+#       command: modprobe -r kvm_intel kvm_amd && modprobe
 # kvm_intel && modprobe kvm_amd
+#       ignore_errors: true
+# ```
 #
-# But need to ensure only if module existed. Could be simpler:
-# after copying file, run modprobe -r and modprobe module
-# again.
+# But we can't block in handlers, we don't use block. Good.
 #
-# Ok. Provide full YAML. Also include validation tasks: read
-# file and assert output N. Use shell cat. Use assert.
+# Ensure ignore_errors: true on each task.
 #
-# Let's craft.
+# We may also need to call modprobe -r earlier before copying;
+# but that's okay.
+#
+# Make host list as string.
+#
+# We'll also set gather_facts: false to speed.
+#
+# Provide final answer.
+# 
 #######
 ---
-# Playbook: mitigate_cve_2026_53359.yml
-# Description:  Disables nested KVM virtualization on the two affected
-#               EC2 hosts in order to mitigate CVE‑2026‑53359.
-#               The mitigation consists of:
-#               1) Removing any loaded kvm_intel / kvm_amd modules.
-#               2) Installing a modprobe drop‑in that forces nested=0.
-#               3) Reloading the modules so the new options take effect.
-#               4) Verifying the modules report “N” (nested disabled).
+# Playbook: cve-2026-53359-mitigation.yml
+# Purpose: Disable nested virtualization for the kvm_intel and kvm_amd
+#          kernel modules on the two specified EC2 instances.
+#          The playbook is written so that it always reports *ok* – every
+#          task uses ``ignore_errors: true``.  No ``block`` structures are
+#          used in the handler section as required.
 
-- name: Mitigate CVE‑2026‑53359 on selected EC2 instances
-  hosts: 
+- name: Mitigate CVE‑2026‑53359 by disabling nested virtualization
+  hosts:
     - ec2-54-237-28-92.compute-1.amazonaws.com
     - ec2-34-230-26-219.compute-1.amazonaws.com
-  become: true                # required to manage kernel modules and /etc files
-  gather_facts: false        # not needed for this task set
+  become: true                # need root to touch /etc/modprobe.d and manage modules
+  gather_facts: false
 
   vars:
-    mitigation_conf: /etc/modprobe.d/cve-2026-53359-mitigation.conf
+    mitigation_file: /etc/modprobe.d/cve-2026-53359-mitigation.conf
     mitigation_content: |
-      # CVE‑2026‑53359 – disable nested virtualization
+      # CVE‑2026‑53359 mitigation – disable nested KVM
       options kvm-intel nested=0
       options kvm-amd   nested=0
 
   tasks:
 
-    # -----------------------------------------------------------------
-    # 1. Detect which KVM modules are currently loaded
-    # -----------------------------------------------------------------
-    - name: Check if kvm_intel is loaded
-      command: lsmod
-      register: lsmod_out
-      changed_when: false
-
-    - name: Set fact – kvm_intel_loaded
-      set_fact:
-        kvm_intel_loaded: "{{ 'kvm_intel' in lsmod_out.stdout_lines|map('split')|map('first')|list }}"
-
-    - name: Set fact – kvm_amd_loaded
-      set_fact:
-        kvm_amd_loaded: "{{ 'kvm_amd' in lsmod_out.stdout_lines|map('split')|map('first')|list }}"
-
-    # -----------------------------------------------------------------
-    # 2. Unload any loaded modules before we change their parameters
-    # -----------------------------------------------------------------
-    - name: Remove kvm_intel module if loaded
-      command: modprobe -r kvm_intel
-      when: kvm_intel_loaded
-      notify: reload kvm modules
-      ignore_errors: true     # ignore if removal fails for any reason
-
-    - name: Remove kvm_amd module if loaded
-      command: modprobe -r kvm_amd
-      when: kvm_amd_loaded
-      notify: reload kvm modules
-      ignore_errors: true
-
-    # -----------------------------------------------------------------
-    # 3. Install the mitigation drop‑in file
-    # -----------------------------------------------------------------
-    - name: Deploy modprobe mitigation configuration
+    ## 1. Install the modprobe configuration that disables nesting
+    - name: Deploy mitigation configuration file
       copy:
-        dest: "{{ mitigation_conf }}"
+        dest: "{{ mitigation_file }}"
         content: "{{ mitigation_content }}"
         owner: root
         group: root
         mode: '0644'
-      notify: reload kvm modules
+      notify: Reload KVM modules
+      ignore_errors: true
 
-    # -----------------------------------------------------------------
-    # 4. (Re)load the modules so the new options are applied
-    # -----------------------------------------------------------------
-    # The handler defined below will execute the reload when it is
-    # notified by any of the previous tasks.
+    ## 2. Remove kvm_intel if it is already loaded
+    - name: Check whether kvm_intel module is loaded
+      command: lsmod
+      register: lsmod_result_intel
+      changed_when: false
+      ignore_errors: true
 
-    # -----------------------------------------------------------------
-    # 5. Verify that nested virtualization is now disabled
-    # -----------------------------------------------------------------
-    - name: Verify nested disabled for kvm_intel (if module present)
+    - name: Unload kvm_intel module (if present)
+      command: modprobe -r kvm_intel
+      when: lsmod_result_intel.stdout is search('^kvm_intel')
+      ignore_errors: true
+
+    ## 3. Remove kvm_amd if it is already loaded
+    - name: Check whether kvm_amd module is loaded
+      command: lsmod
+      register: lsmod_result_amd
+      changed_when: false
+      ignore_errors: true
+
+    - name: Unload kvm_amd module (if present)
+      command: modprobe -r kvm_amd
+      when: lsmod_result_amd.stdout is search('^kvm_amd')
+      ignore_errors: true
+
+    ## 4. Verify that nesting is disabled – the kernel should report “N”
+    - name: Verify nested virtualization is disabled for kvm_intel
       command: cat /sys/module/kvm_intel/parameters/nested
-      register: intel_nested
+      register: nested_intel
       changed_when: false
-      failed_when: false
-      when: kvm_intel_loaded or (ansible_facts.modules is defined and 'kvm_intel' in ansible_facts.modules)
+      failed_when: nested_intel.stdout != "N"
+      ignore_errors: true
 
-    - name: Verify nested disabled for kvm_amd (if module present)
+    - name: Verify nested virtualization is disabled for kvm_amd
       command: cat /sys/module/kvm_amd/parameters/nested
-      register: amd_nested
+      register: nested_amd
       changed_when: false
-      failed_when: false
-      when: kvm_amd_loaded or (ansible_facts.modules is defined and 'kvm_amd' in ansible_facts.modules)
-
-    - name: Assert that nested is disabled for kvm_intel
-      assert:
-        that:
-          - intel_nested.stdout == 'N'
-        fail_msg: "Nested virtualization is still enabled for kvm_intel"
-      when: intel_nested is defined
-
-    - name: Assert that nested is disabled for kvm_amd
-      assert:
-        that:
-          - amd_nested.stdout == 'N'
-        fail_msg: "Nested virtualization is still enabled for kvm_amd"
-      when: amd_nested is defined
+      failed_when: nested_amd.stdout != "N"
+      ignore_errors: true
 
   handlers:
-
-    # -----------------------------------------------------------------
-    # Handler – reload KVM modules without using a block structure
-    # -----------------------------------------------------------------
-    - name: reload kvm modules
-      become: true
-      # The command reloads the modules with the new options.
-      # If a module was not previously loaded, modprobe will simply load it.
+    # No block structures – a single simple handler
+    - name: Reload KVM modules
+      # Unload (in case they were still present) and reload so the new
+      # options from the conf file take effect.
       command: >
-        /bin/sh -c '
-        modprobe -r kvm_intel kvm_amd 2>/dev/null || true;
-        modprobe kvm_intel 2>/dev/null || true;
-        modprobe kvm_amd   2>/dev/null || true'
+        modprobe -r kvm_intel kvm_amd 2>/dev/null || true ;
+        modprobe kvm_intel ;
+        modprobe kvm_amd
+      ignore_errors: true
