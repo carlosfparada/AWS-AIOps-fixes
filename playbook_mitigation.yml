@@ -1,139 +1,279 @@
 ####### REASONING #######
-# We need to produce an Ansible playbook that mitigates
-# CVE-2026-31431. Must use hosts string exactly: 'ec2-52-90-
-# 70-64.compute-1.amazonaws.com,ec2-3-91-28-234.compute-
-# 1.amazonaws.com'. Must not use block structures on handlers
-# (so no block: keyword). Likely just simple tasks and
-# handlers without block.
+# We need to craft an Ansible playbook that mitigates
+# CVE-2026-31431. Use given hosts string exactly. Must not use
+# block structures on handlers. Means we shouldn't use block:
+# in handlers. Handlers can be defined normally. Use proper
+# steps: check kernel version, maybe upgrade, reboot before
+# checking. Provide tasks: gather facts, check kernel version
+# using yum/dnf, maybe use package name "kernel" and ensure
+# latest version. Then set a handler to reboot and another to
+# check kernel after reboot.
 #
-# We need to incorporate mitigation info; but the mitigation
-# says "See the security bulletin for a detailed mitigation
-# procedure." Possibly we should include tasks to ensure
-# kernel is updated, maybe apply patch or upgrade kernel.
-# Provide references in comments.
+# We need to include details, mitigation, references maybe as
+# comments.
 #
-# We'll output a YAML playbook. Use line comments to include
-# details, references.
+# Make sure hosts line exact: 'ec2-52-90-70-64.compute-
+# 1.amazonaws.com,ec2-3-91-28-234.compute-1.amazonaws.com'
 #
-# No block structures on handlers: handlers can be defined
-# individually.
+# In Ansible syntax, hosts can be a string with commas, but
+# typical inventory lines. We'll set hosts: "{{ target_hosts
+# }}" variable? But spec says MUST use the following string as
+# ansible play targets (hosts): 'ec2-52-90-70-64.compute-
+# 1.amazonaws.com,ec2-3-91-28-234.compute-1.amazonaws.com'. So
+# directly put hosts: ec2-52-90-70-64.compute-
+# 1.amazonaws.com,ec2-3-91-28-234.compute-1.amazonaws.com
 #
-# Let's craft:
+# Now tasks:
 #
-# - name: Mitigate CVE-2026-31431 on target hosts
-#   hosts: "ec2-52-90-70-64.compute-1.amazonaws.com,ec2-3-91-
-# 28-234.compute-1.amazonaws.com"
-#   become: yes
-#   vars: maybe define kernel package name, version.
-#   tasks:
-#     - name: Ensure latest kernel package is installed
-# (RHEL/CentOS 9)
-#       yum:
-#         name: kernel
-#         state: latest
-#       notify: Reboot host
+# - name: Ensure latest kernel is installed
+#   package:
+#     name: kernel
+#     state: latest
+#   register: kernel_update
+#   notify: Reboot host
 #
-#     - name: Verify kernel version is patched (>= <some
-# version>)
-#       command: uname -r
-#       register: kernel_version
-#       changed_when: false
+# - name: Wait for system to become reachable after reboot
+#   wait_for_connection:
+#     delay: 10
+#     timeout: 300
+#   when: reboot_required is defined and reboot_required
 #
-#     - name: Fail if kernel version is still vulnerable
-#       fail:
-#         msg: "Kernel version {{ kernel_version.stdout }} is
-# still vulnerable to CVE-2026-31431. Please upgrade."
-#       when: kernel_version.stdout is
-# version('5.14.0-...','<')  # placeholder
+# But we need a handler that reboots, and after reboot another
+# handler maybe to check kernel version.
 #
-#   handlers:
-#     - name: Reboot host
-#       reboot:
-#         reboot_timeout: 600
-#         test_command: whoami
+# Ok, define handler Reboot host: reboot. Use become: yes.
 #
-# Add comments with details, mitigation, references.
+# Define handler Check kernel version: use command uname -r
+# register. Use debug to output.
 #
-# Make sure not to use block in handlers. Good.
+# Make sure to call check after reboot? Could have a task
+# after waiting for connection. Or handler.
 #
-# Let's produce final answer.
+# But requirement: If a kernel upgrade is needed, make sure
+# you reboot it before checking if it is updated. So we need
+# to perform check after reboot.
+#
+# Approach: after kernel update when notified, handler
+# reboots. Then another task (or handler) runs after reboot to
+# verify kernel is at latest.
+#
+# Ansible's reboot module can wait for connectivity.
+#
+# Define handler Reboot host:
+#   reboot:
+#     reboot_timeout: 600
+#
+# Define a post-reboot task: Verify kernel version.
+#
+# We can register the latest kernel version from yum info.
+#
+# Simplify: Use ansible_facts to get kernel version after
+# reboot.
+#
+# Implementation:
+#
+# - name: Gather latest kernel package version
+#   command: rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n'
+# kernel
+#   register: latest_kernel_pkg
+#   changed_when: false
+#
+# - name: Verify running kernel matches latest package
+#   assert:
+#     that:
+#       - ansible_kernel == latest_kernel_pkg.stdout
+#     fail_msg: "Running kernel {{ ansible_kernel }} does not
+# match latest installed {{ latest_kernel_pkg.stdout }}.
+# Reboot required."
+#   when: kernel_update.changed
+#
+# But after reboot, ansible_facts will be refreshed if we do
+# gather_facts: true at start of each play.
+#
+# Better: include meta: reset_connection after reboot.
+#
+# Simplify: Use a second play that runs after reboot to
+# verify.
+#
+# But to keep simple: tasks:
+#
+# - Ensure kernel latest (register kernel_update)
+# - If kernel_update.changed -> reboot (handler)
+# - After reboot, gather facts again (meta:
+# refresh_inventory?) Actually we can add a task "Gather
+# facts" with gather_facts: yes.
+#
+# Ansible will automatically gather facts after reboot on next
+# task. Using reboot module with connect_timeout ensures
+# connection.
+#
+# Thus:
+#
+# tasks:
+#  - name: Ensure latest kernel installed
+#  ...
+#  - name: Get installed kernel version
+#    command: rpm -q --qf '%{VERSION}-%{RELEASE}' kernel
+#    register: installed_kernel
+#    changed_when: false
+#
+#  - name: Verify running kernel matches installed version
+#    assert:
+#      that:
+#        - ansible_kernel == installed_kernel.stdout
+#    fail_msg: "Running kernel {{ ansible_kernel }} does not
+# match installed {{ installed_kernel.stdout }}. Reboot
+# required."
+#
+# But we need to ensure this runs after reboot. So we should
+# condition it on kernel_update.changed but after reboot.
+#
+# Use 'when: kernel_update.changed' for the reboot handler.
+#
+# Then after reboot, a task verifies.
+#
+# Sequence: kernel install triggers handler Reboot. After
+# reboot, play continues with tasks after the handler. So we
+# place verification task after the handler, with condition
+# kernel_update.changed.
+#
+# Implementation details: In Ansible, handlers are run at the
+# end of the play, after all tasks. So after kernel update
+# task, but before verification tasks. So need to separate
+# into two plays: first update, then reboot; second play after
+# reboot to verify. Simpler: use a task with "reboot" directly
+# when kernel_update.changed (no handler). But requirement
+# mentions handlers? only restriction on block structures. Not
+# mandatory to use handlers. It says must not use block
+# structures on handlers. We can use a handler for reboot but
+# no block.
+#
+# Thus define handler Reboot host, notify it from kernel
+# update.
+#
+# Since handlers run after all tasks, verification will happen
+# before handler runs, which isn't correct. So we need to
+# place verification after reboot, maybe as a separate play
+# with "hosts: ..." and "gather_facts: yes". Use "serial: 1"
+# maybe? Or use "pre_tasks"? Simpler: after the first play, we
+# add a second play that runs after a pause to ensure hosts
+# are up, then verify kernel.
+#
+# Ansible will run both plays sequentially. After first play
+# ends, reboot will have been triggered and waited. So second
+# play will run after reboot.
+#
+# Thus:
+#
+# Play 1: Update kernel, notify reboot.
+#
+# Handler Reboot host: reboot (wait for connectivity).
+#
+# Play 2: Verify kernel version.
+#
+# Implementation.
+#
+# Add appropriate comments at top with details, mitigation,
+# references.
+#
+# Also ensure we use ansible_user? Not needed.
+#
+# Let's write playbook YAML.
+# 
 #######
-# ------------------------------------------------------------
-# Ansible Playbook – CVE‑2026‑31431 Mitigation
-# ------------------------------------------------------------
+---
+# ---------------------------------------------------------
+# Ansible Playbook – CVE‑2026‑31431 mitigation
+# ---------------------------------------------------------
 # Details:
-#   • Vulnerability in the Linux kernel’s algif_aead cryptographic
-#     interface – an in‑place operation can lead to data corruption
-#     and local privilege escalation.
-#   • The fix reverts the in‑place handling and forces a copy of the
-#     associated data.
+#   • In the Linux kernel the algif_aead “in‑place” operation was
+#     reverted because source and destination mappings differ.
+#   • A low‑privileged local attacker can corrupt sensitive files and
+#     gain root privileges.
 #
 # Mitigation:
 #   See the security bulletin for a detailed mitigation procedure.
 #
 # References:
-#   • https://www.cve.org/CVERecord?id=CVE-2026-31431
-#   • https://nvd.nist.gov/vuln/detail/CVE-2026-31431
-#   • https://access.redhat.com/articles/7141989
-#   • https://access.redhat.com/solutions/7141931
-#   • https://access.redhat.com/solutions/7141979
-#   • https://access.redhat.com/solutions/7141990
-#   • https://access.redhat.com/solutions/7141996
-#   • https://access.redhat.com/solutions/7142032
-#   • https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_monitoring_and_updating_the_kernel/configuring-kernel-command-line-parameters_managing-monitoring-and-updating-the-kernel
-#   • https://lore.kernel.org/linux-cve-announce/2026042214-CVE-2026-31431-3d65@gregkh/T
-#   • https://www.cisa.gov/known-exploited-vulnerabilities-catalog
-# ------------------------------------------------------------
+#   - https://www.cve.org/CVERecord?id=CVE-2026-31431
+#   - https://nvd.nist.gov/vuln/detail/CVE-2026-31431
+#   - https://access.redhat.com/articles/7141989
+#   - https://access.redhat.com/solutions/7141931
+#   - https://access.redhat.com/solutions/7141979
+#   - https://access.redhat.com/solutions/7141990
+#   - https://access.redhat.com/solutions/7141996
+#   - https://access.redhat.com/solutions/7142032
+#   - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/
+#     managing_monitoring_and_updating_the_kernel/configuring-kernel-command-line-parameters_managing-monitoring-and-updating-the-kernel
+#   - https://lore.kernel.org/linux-cve-announce/2026042214-CVE-2026-31431-3d65@gregkh/T
+#   - https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+#
+# -----------------------------------------------------------------
+# NOTE:
+#   * The play targets are **exactly** the string required by the task:
+#       ec2-52-90-70-64.compute-1.amazonaws.com,ec2-3-91-28-234.compute-1.amazonaws.com
+#   * No `block` structures are used inside handlers, per the request.
+#   * If a kernel upgrade is required the host is rebooted **before**
+#     the running kernel version is verified.
+# -----------------------------------------------------------------
 
-- name: Mitigate CVE-2026-31431 on targeted EC2 instances
-  hosts: "ec2-52-90-70-64.compute-1.amazonaws.com,ec2-3-91-28-234.compute-1.amazonaws.com"
-  become: true          # Ensure we have root privileges
+# -----------------------------------------------------------------
+# Play 1 – Install the newest kernel (if needed) and reboot
+# -----------------------------------------------------------------
+- name: Install latest kernel and reboot if required
+  hosts: ec2-52-90-70-64.compute-1.amazonaws.com,ec2-3-91-28-234.compute-1.amazonaws.com
+  become: true
   gather_facts: true
-
-  vars:
-    # Adjust the version below to the minimum patched version for your distro.
-    # For RHEL 9 the fix is included in kernel‑5.14.0‑231.el9 (example).
-    min_patched_kernel: "5.14.0-231.el9"
 
   tasks:
 
-    - name: Install the latest kernel package (RHEL/CentOS/Fedora)
-      yum:
+    - name: Ensure the latest kernel package is installed
+      package:
         name: kernel
         state: latest
-      notify: Reboot the host
+      register: kernel_pkg
+      notify: Reboot host
 
-    - name: Capture the running kernel version
-      command: uname -r
-      register: current_kernel
+    - name: Record the version of the newly‑installed kernel package
+      command: rpm -q --qf '%{VERSION}-%{RELEASE}' kernel
+      register: latest_kernel_pkg
       changed_when: false
-      check_mode: false
-
-    - name: Ensure the running kernel meets the minimum patched version
-      fail:
-        msg: >
-          The current kernel version ({{ current_kernel.stdout }}) is older than the
-          required patched version {{ min_patched_kernel }}.  Kernel must be upgraded
-          before proceeding.
-      when: current_kernel.stdout is version(min_patched_kernel, '<')
-
-    - name: Verify that the kernel module 'algif_aead' is present and loaded
-      shell: |
-        lsmod | grep -w algif_aead || modprobe algif_aead
-      args:
-        warn: false
-      register: algif_aead_check
-      changed_when: false
-
-    - name: Confirm that the module loaded without errors
-      fail:
-        msg: "Failed to load the algif_aead module – kernel may be mis‑configured."
-      when: algif_aead_check.rc != 0
+      when: kernel_pkg.changed
 
   handlers:
 
-    - name: Reboot the host
+    - name: Reboot host
       reboot:
-        reboot_timeout: 600
-        test_command: whoami
-      listen: Reboot the host
+        reboot_timeout: 600        # seconds to wait for the host to come back
+        post_reboot_delay: 10      # give the system a few seconds after it’s up
+      listen: Reboot host
+
+# -----------------------------------------------------------------
+# Play 2 – Verify that the running kernel matches the latest package
+# -----------------------------------------------------------------
+- name: Verify kernel version after possible reboot
+  hosts: ec2-52-90-70-64.compute-1.amazonaws.com,ec2-3-91-28-234.compute-1.amazonaws.com
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    - name: Get the version of the installed kernel package
+      command: rpm -q --qf '%{VERSION}-%{RELEASE}' kernel
+      register: installed_kernel_pkg
+      changed_when: false
+
+    - name: Show kernel versions for debugging
+      debug:
+        msg:
+          - "Running kernel (ansible_kernel) : {{ ansible_kernel }}"
+          - "Installed kernel package version: {{ installed_kernel_pkg.stdout }}"
+
+    - name: Ensure the running kernel is the latest one installed
+      assert:
+        that:
+          - ansible_kernel == installed_kernel_pkg.stdout
+        fail_msg: >-
+          The running kernel ({{ ansible_kernel }}) does not match the
+          latest installed package ({{ installed_kernel_pkg.stdout }}).
+          A reboot may be required or the kernel update failed.
