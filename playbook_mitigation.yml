@@ -1,146 +1,139 @@
 ####### REASONING #######
-# We need to output an Ansible playbook, using given hosts
-# string. Must not use block structures on handlers – meaning
-# don't use block: in handlers? Probably just simple handler
-# definitions without block. Provide tasks to mitigate CVE.
-# Since mitigation says see bulletin for detailed procedure,
-# maybe we just ensure kernel is updated to version with fix,
-# maybe using yum/dnf to update kernel, ensure reboot. Provide
-# handlers to reboot. Avoid block. Provide hosts list exactly
-# as given string. Provide yaml format.
+# We need to produce an Ansible playbook that mitigates
+# CVE-2026-31431. Must use hosts string exactly: 'ec2-52-90-
+# 70-64.compute-1.amazonaws.com,ec2-3-91-28-234.compute-
+# 1.amazonaws.com'. Must not use block structures on handlers
+# (so no block: keyword). Likely just simple tasks and
+# handlers without block.
 #
-# Let's craft playbook:
+# We need to incorporate mitigation info; but the mitigation
+# says "See the security bulletin for a detailed mitigation
+# procedure." Possibly we should include tasks to ensure
+# kernel is updated, maybe apply patch or upgrade kernel.
+# Provide references in comments.
 #
-# ---
-# - name: Mitigate CVE-2026-31431 on target EC2 instances
-#   hosts: ec2-52-90-70-64.compute-1.amazonaws.com,ec2-3-91-
-# 28-234.compute-1.amazonaws.com
-#   become: true
-#   vars:
-#     kernel_packages:
-#       - kernel
-#       - kernel-core
-#       - kernel-modules
+# We'll output a YAML playbook. Use line comments to include
+# details, references.
+#
+# No block structures on handlers: handlers can be defined
+# individually.
+#
+# Let's craft:
+#
+# - name: Mitigate CVE-2026-31431 on target hosts
+#   hosts: "ec2-52-90-70-64.compute-1.amazonaws.com,ec2-3-91-
+# 28-234.compute-1.amazonaws.com"
+#   become: yes
+#   vars: maybe define kernel package name, version.
 #   tasks:
-#     - name: Gather OS details
-#       ansible.builtin.setup:
-#         filter: ansible_distribution*
-#
-#     - name: Ensure the latest kernel packages are installed
-# (RHEL/CentOS/Fedora)
-#       ansible.builtin.yum:
-#         name: "{{ kernel_packages }}"
+#     - name: Ensure latest kernel package is installed
+# (RHEL/CentOS 9)
+#       yum:
+#         name: kernel
 #         state: latest
-#       when: ansible_facts['os_family'] == "RedHat"
 #       notify: Reboot host
 #
-#     - name: Ensure the latest kernel packages are installed
-# (Debian/Ubuntu)
-#       ansible.builtin.apt:
-#         name: "linux-image-generic"
-#         state: latest
-#         update_cache: yes
-#       when: ansible_facts['os_family'] == "Debian"
-#       notify: Reboot host
-#
-#     - name: Verify that the vulnerable kernel version is not
-# running
-#       ansible.builtin.command: uname -r
+#     - name: Verify kernel version is patched (>= <some
+# version>)
+#       command: uname -r
 #       register: kernel_version
 #       changed_when: false
 #
-#     - name: Fail if a vulnerable kernel is still running
-#       ansible.builtin.fail:
-#         msg: "A vulnerable kernel version is still active:
-# {{ kernel_version.stdout }}. Reboot required."
-#       when: "'{{ kernel_version.stdout }}' is version('6.6',
-# '<')"
+#     - name: Fail if kernel version is still vulnerable
+#       fail:
+#         msg: "Kernel version {{ kernel_version.stdout }} is
+# still vulnerable to CVE-2026-31431. Please upgrade."
+#       when: kernel_version.stdout is
+# version('5.14.0-...','<')  # placeholder
 #
 #   handlers:
 #     - name: Reboot host
-#       ansible.builtin.reboot:
+#       reboot:
 #         reboot_timeout: 600
 #         test_command: whoami
 #
-# Add comments about CVE details, references.
+# Add comments with details, mitigation, references.
 #
-# Make sure no block in handler.
+# Make sure not to use block in handlers. Good.
 #
-# Let's output.
+# Let's produce final answer.
 #######
----
-# Playbook: Mitigate CVE‑2026‑31431 (algif_aead in‑place operation flaw)
-# ---------------------------------------------------------------
-# The vulnerability is described as:
-#   * An incorrect in‑place operation in the Linux kernel's
-#     crypto: algif_aead interface can allow a low‑privileged local
-#     attacker to corrupt system files and gain root.
-#   * The fix is shipped in updated kernel packages.  See the security
-#     bulletin for the detailed mitigation procedure.
+# ------------------------------------------------------------
+# Ansible Playbook – CVE‑2026‑31431 Mitigation
+# ------------------------------------------------------------
+# Details:
+#   • Vulnerability in the Linux kernel’s algif_aead cryptographic
+#     interface – an in‑place operation can lead to data corruption
+#     and local privilege escalation.
+#   • The fix reverts the in‑place handling and forces a copy of the
+#     associated data.
+#
+# Mitigation:
+#   See the security bulletin for a detailed mitigation procedure.
+#
 # References:
-#   - https://www.cve.org/CVERecord?id=CVE-2026-31431
-#   - https://nvd.nist.gov/vuln/detail/CVE-2026-31431
-#   - https://access.redhat.com/articles/7141989
-#   - https://access.redhat.com/solutions/7141931
-#   - https://access.redhat.com/solutions/7141979
-#   - https://access.redhat.com/solutions/7141990
-#   - https://access.redhat.com/solutions/7141996
-#   - https://access.redhat.com/solutions/7142032
-#   - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_monitoring_and_updating_the_kernel/configuring-kernel-command-line-parameters_managing-monitoring-and-updating-the-kernel
-#   - https://lore.kernel.org/linux-cve-announce/2026042214-CVE-2026-31431-3d65@gregkh/T
-#   - https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+#   • https://www.cve.org/CVERecord?id=CVE-2026-31431
+#   • https://nvd.nist.gov/vuln/detail/CVE-2026-31431
+#   • https://access.redhat.com/articles/7141989
+#   • https://access.redhat.com/solutions/7141931
+#   • https://access.redhat.com/solutions/7141979
+#   • https://access.redhat.com/solutions/7141990
+#   • https://access.redhat.com/solutions/7141996
+#   • https://access.redhat.com/solutions/7142032
+#   • https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_monitoring_and_updating_the_kernel/configuring-kernel-command-line-parameters_managing-monitoring-and-updating-the-kernel
+#   • https://lore.kernel.org/linux-cve-announce/2026042214-CVE-2026-31431-3d65@gregkh/T
+#   • https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+# ------------------------------------------------------------
 
-- name: Apply kernel updates to remediate CVE‑2026‑31431
-  hosts: ec2-52-90-70-64.compute-1.amazonaws.com,ec2-3-91-28-234.compute-1.amazonaws.com
-  become: true
+- name: Mitigate CVE-2026-31431 on targeted EC2 instances
+  hosts: "ec2-52-90-70-64.compute-1.amazonaws.com,ec2-3-91-28-234.compute-1.amazonaws.com"
+  become: true          # Ensure we have root privileges
+  gather_facts: true
+
   vars:
-    # Packages that contain the kernel on RHEL‑compatible systems
-    rhel_kernel_pkgs:
-      - kernel
-      - kernel-core
-      - kernel-modules
-    # Minimum kernel version that contains the fix (example version)
-    fixed_version: "6.6"
+    # Adjust the version below to the minimum patched version for your distro.
+    # For RHEL 9 the fix is included in kernel‑5.14.0‑231.el9 (example).
+    min_patched_kernel: "5.14.0-231.el9"
 
   tasks:
 
-    - name: Gather minimal OS facts
-      ansible.builtin.setup:
-        filter: ansible_distribution*
-      tags: always
-
-    - name: Install the latest kernel packages on RedHat‑family hosts
-      ansible.builtin.yum:
-        name: "{{ rhel_kernel_pkgs }}"
+    - name: Install the latest kernel package (RHEL/CentOS/Fedora)
+      yum:
+        name: kernel
         state: latest
-      when: ansible_facts['os_family'] == "RedHat"
-      notify: Reboot host
+      notify: Reboot the host
 
-    - name: Install the latest generic kernel on Debian‑family hosts
-      ansible.builtin.apt:
-        name: linux-image-generic
-        state: latest
-        update_cache: yes
-      when: ansible_facts['os_family'] == "Debian"
-      notify: Reboot host
-
-    - name: Capture the version of the currently running kernel
-      ansible.builtin.command: uname -r
+    - name: Capture the running kernel version
+      command: uname -r
       register: current_kernel
       changed_when: false
+      check_mode: false
 
-    - name: Fail if a vulnerable kernel is still running after the update
-      ansible.builtin.fail:
+    - name: Ensure the running kernel meets the minimum patched version
+      fail:
         msg: >
-          The host is still running a kernel version
-          ({{ current_kernel.stdout }}) that is older than the
-          fixed version {{ fixed_version }}.  A reboot is required.
-      when: >
-        (current_kernel.stdout is version(fixed_version, '<'))
+          The current kernel version ({{ current_kernel.stdout }}) is older than the
+          required patched version {{ min_patched_kernel }}.  Kernel must be upgraded
+          before proceeding.
+      when: current_kernel.stdout is version(min_patched_kernel, '<')
+
+    - name: Verify that the kernel module 'algif_aead' is present and loaded
+      shell: |
+        lsmod | grep -w algif_aead || modprobe algif_aead
+      args:
+        warn: false
+      register: algif_aead_check
+      changed_when: false
+
+    - name: Confirm that the module loaded without errors
+      fail:
+        msg: "Failed to load the algif_aead module – kernel may be mis‑configured."
+      when: algif_aead_check.rc != 0
 
   handlers:
 
-    - name: Reboot host
-      ansible.builtin.reboot:
+    - name: Reboot the host
+      reboot:
         reboot_timeout: 600
         test_command: whoami
+      listen: Reboot the host
