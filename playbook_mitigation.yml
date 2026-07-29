@@ -1,185 +1,126 @@
 ####### REASONING #######
-# We need to write an Ansible playbook to mitigate
-# CVE-2026-31431. Use given hosts string as ansible play
-# targets.
+# We need to output an Ansible playbook that mitigates
+# CVE-2026-31431. Must use hosts string exactly as given: 'ec2
+# -3-84-172-241.compute-1.amazonaws.com,ec2-3-88-254-
+# 183.compute-1.amazonaws.com'.
 #
-# We need to output a playbook YAML. Since the mitigation
-# description says "See the security bulletin for a detailed
-# mitigation procedure." But we can include steps: update
-# kernel, apply patch, reboot. Provide tasks with yum/dnf
-# updating kernel to latest version, maybe use package module.
-# Also ensure we have latest kernel packages, maybe use the
-# "yum" module with state=latest for kernel and kernel-
-# headers. Use "reboot" module after update. Include vars with
-# CVE info and references. Provide comments.
+# We must not use block structure on handlers. So likely we
+# need to include a handler without block, just a proper
+# handler entry.
 #
-# Make sure hosts line uses the exact string: 'ec2-3-84-172-
-# 241.compute-1.amazonaws.com,ec2-3-88-254-183.compute-
-# 1.amazonaws.com'.
+# Goal: mitigation – maybe install updated kernel, reboot,
+# ensure kernel version patched. Use yum/dnf to update kernel.
+# Also add a message referencing bulletin. We'll include
+# tasks: check kernel version, update packages, reboot if
+# needed, and a handler to reboot.
 #
-# Ansible inventory can be defined inline via hosts: "ec2-3-
-# 84-172-241.compute-1.amazonaws.com,ec2-3-88-254-183.compute-
-# 1.amazonaws.com". Use quotes.
+# But cannot use block in handlers. So we can have a handler
+# that reboots. Handlers usually are blocks if multiple tasks,
+# but we can just have a single task.
 #
-# Write playbook with name, gather_facts: yes, become: yes.
+# We need to obey constraints.
 #
-# Include tasks: display CVE info (debug), update kernel
-# (package), ensure grub config uses new kernel (optional),
+# Thus produce YAML of playbook.
+#
+# Will include vars: maybe security bulletin link.
+#
+# Remember to use the hosts string exactly, maybe within
+# quotes.
+#
+# Will include become: true.
+#
+# Will include tasks: Ensure kernel is at least certain
+# version, maybe using yum module with name: kernel, state:
+# latest, and also install kernel-devel.
+#
+# Then use register to check if kernel updated, then notify
 # reboot.
 #
-# Also maybe add a block to check if kernel version is fixed
-# based on version numbers (we can leave placeholder). Might
-# use when.
+# After reboot, perhaps verify kernel version.
 #
-# Provide references as comments.
+# Will include appropriate comments with references.
 #
-# Will provide YAML file.
-#
-# Let's output answer.
+# Let's craft.
+# 
 #######
 ---
-# ------------------------------------------------------------
-# Playbook: mitigate-cve-2026-31431.yml
-# Description: Apply the upstream fix for CVE‑2026‑31431 (algif_aead
-#              in‑place operation bug) by updating the kernel to the
-#              latest patched version and rebooting the host.
-# Targets: ec2-3-84-172-241.compute-1.amazonaws.com,
-#          ec2-3-88-254-183.compute-1.amazonaws.com
-# ------------------------------------------------------------
+# Playbook to mitigate CVE‑2026‑31431 (algif_aead in‑place operation flaw)
+# --------------------------------------------------------------------
+#  * CVE details:
+#    - In the Linux kernel the algif_aead cryptographic algorithm interface
+#      performed an unsafe in‑place operation that could be exploited by a
+#      low‑privileged attacker to corrupt system files and obtain root.
+#  * Mitigation:
+#    - Apply the kernel update that reverts the in‑place change (see the
+#      security bulletin for a detailed mitigation procedure).
+#  * References:
+#    - https://www.cve.org/CVERecord?id=CVE-2026-31431
+#    - https://nvd.nist.gov/vuln/detail/CVE-2026-31431
+#    - https://access.redhat.com/articles/7141989
+#    - https://access.redhat.com/solutions/7141931
+#    - https://access.redhat.com/solutions/7141979
+#    - https://access.redhat.com/solutions/7141990
+#    - https://access.redhat.com/solutions/7141996
+#    - https://access.redhat.com/solutions/7142032
+#    - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_monitoring_and_updating_the_kernel/configuring-kernel-command-line-parameters_managing-monitoring-and-updating-the-kernel
+#    - https://lore.kernel.org/linux-cve-announce/2026042214-CVE-2026-31431-3d65@gregkh/T
+#    - https://www.cisa.gov/known-exploited-vulnerabilities-catalog
 
-- name: Mitigate CVE‑2026‑31431 on the target EC2 instances
-  hosts: "ec2-3-84-172-241.compute-1.amazonaws.com,ec2-3-88-254-183.compute-1.amazonaws.com"
-  become: true               # all tasks need root privileges
-  gather_facts: true         # we need the kernel version, etc.
-
+- name: Apply kernel patch for CVE‑2026‑31431
+  hosts: 'ec2-3-84-172-241.compute-1.amazonaws.com,ec2-3-88-254-183.compute-1.amazonaws.com'
+  become: true
   vars:
-    # -----------------------------------------------------------------
-    # CVE meta‑data (useful for documentation, idempotency checks, etc.)
-    # -----------------------------------------------------------------
-    cve_id:              "CVE-2026-31431"
-    cve_severity:        "Low"
-    cve_description: |
-      A flaw was found in the Linux kernel's algif_aead cryptographic
-      algorithm interface. An incorrect in‑place operation causes source
-      and destination data mappings to differ during cryptographic
-      processing. A low‑privileged local attacker can exploit this flaw
-      to corrupt the contents of sensitive system files and escalate to
-      root privileges.
-
-      In the Linux kernel, the vulnerability has been resolved by
-      reverting to an out‑of‑place operation (see commit 72548b09…).
-
-    mitigation_note: |
-      See the security bulletin for a detailed mitigation procedure.
-    # -----------------------------------------------------------------
-    # Package list – adjust if you use a distro that splits the kernel
-    # into separate packages (e.g., kernel-uek, kernel-modules, …)
-    # -----------------------------------------------------------------
-    kernel_packages:
-      - kernel
-      - kernel-core       # on RHEL 9 / Enterprise Linux 9
-      - kernel-modules    # on RHEL 9 / Enterprise Linux 9
-      - kernel-devel      # optional, only if you compile modules locally
-
-    # -----------------------------------------------------------------
-    # References – stored for easy lookup / audit
-    # -----------------------------------------------------------------
-    cve_references:
-      - https://www.cve.org/CVERecord?id=CVE-2026-31431
-      - https://nvd.nist.gov/vuln/detail/CVE-2026-31431
-      - https://access.redhat.com/articles/7141989
-      - https://access.redhat.com/solutions/7141931
-      - https://access.redhat.org/solutions/7141979
-      - https://access.redhat.org/solutions/7141990
-      - https://access.redhat.org/solutions/7141996
-      - https://access.redhat.org/solutions/7142032
-      - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_monitoring_and_updating_the_kernel/configuring-kernel-command-line-parameters_managing-monitoring-and-updating-the-kernel
-      - https://lore.kernel.org/linux-cve-announce/2026042214-CVE-2026-31431-3d65@gregkh/T
-      - https://www.cisa.gov/known-exploited-vulnerabilities-catalog
-
+    # Minimum kernel version that contains the fix (example for RHEL 9)
+    # Adjust the version according to your distribution's advisory.
+    required_kernel: "5.14.0-284.11.1.el9_2"
   tasks:
 
-    # -----------------------------------------------------------------
-    # 1️⃣  Display CVE information – helpful for logs / audit trails
-    # -----------------------------------------------------------------
-    - name: Show CVE details
-      ansible.builtin.debug:
-        msg:
-          - "Mitigating {{ cve_id }} on {{ inventory_hostname }}"
-          - "{{ cve_description }}"
-          - "References: {{ cve_references | join(', ') }}"
+    - name: Gather current kernel version
+      ansible.builtin.command: uname -r
+      register: current_kernel
+      changed_when: false
 
-    # -----------------------------------------------------------------
-    # 2️⃣  Install the latest kernel (and related packages)
-    # -----------------------------------------------------------------
-    - name: Ensure latest kernel packages are installed
-      ansible.builtin.package:
-        name: "{{ kernel_packages }}"
+    - name: Debug current kernel version
+      ansible.builtin.debug:
+        msg: "Current kernel version is {{ current_kernel.stdout }}"
+
+    - name: Install the latest kernel package (RHEL / CentOS / Rocky / AlmaLinux)
+      ansible.builtin.yum:
+        name: kernel
         state: latest
       register: kernel_update
+      when: ansible_facts.os_family == "RedHat"
 
-    # -----------------------------------------------------------------
-    # 3️⃣  Determine if a reboot is required
-    # -----------------------------------------------------------------
-    - name: Check if the running kernel is the newest one
-      ansible.builtin.command: rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel
-      changed_when: false
-      register: installed_kernels
+    - name: Install the latest kernel package (Debian / Ubuntu)
+      ansible.builtin.apt:
+        name: linux-image-generic
+        state: latest
+        update_cache: yes
+      register: kernel_update
+      when: ansible_facts.os_family == "Debian"
 
-    - name: Get the version of the currently running kernel
-      ansible.builtin.command: uname -r
-      changed_when: false
-      register: running_kernel
-
-    - name: Set fact – reboot needed?
+    - name: Set fact if kernel was updated
       ansible.builtin.set_fact:
-        reboot_required: "{{ running_kernel.stdout not in installed_kernels.stdout_lines }}"
+        kernel_needs_reboot: true
+      when: kernel_update.changed
 
-    - name: Debug – kernel version comparison
-      ansible.builtin.debug:
-        msg:
-          - "Running kernel: {{ running_kernel.stdout }}"
-          - "Installed kernels: {{ installed_kernels.stdout_lines }}"
-          - "Reboot required: {{ reboot_required }}"
-
-    # -----------------------------------------------------------------
-    # 4️⃣  Make the latest kernel the default (GRUB2)
-    # -----------------------------------------------------------------
-    - name: Set default boot entry to the latest kernel (GRUB2)
-      ansible.builtin.command: >
-        grub2-set-default 0
-      when: reboot_required
-      args:
-        warn: false
-      become: true
-
-    # -----------------------------------------------------------------
-    # 5️⃣  Reboot the host if the new kernel is not yet active
-    # -----------------------------------------------------------------
-    - name: Reboot the machine to apply the new kernel
+    - name: Reboot the host to load the patched kernel
       ansible.builtin.reboot:
+        msg: "Rebooting to apply kernel update that mitigates CVE‑2026‑31431"
         reboot_timeout: 600
-        test_command: uname -r
-      when: reboot_required
-      listen: reboot_trigger
+      when: kernel_needs_reboot | default(false)
+      notify: Verify running kernel after reboot
 
-    # -----------------------------------------------------------------
-    # 6️⃣  Verify the kernel is now patched
-    # -----------------------------------------------------------------
-    - name: Verify that the running kernel matches the latest installed one
+  handlers:
+    - name: Verify running kernel after reboot
       ansible.builtin.command: uname -r
-      changed_when: false
       register: post_reboot_kernel
-      until: post_reboot_kernel.stdout in installed_kernels.stdout_lines
-      retries: 5
-      delay: 15
+      changed_when: false
 
-    - name: Final verification message
-      ansible.builtin.debug:
-        msg: >
-          Host {{ inventory_hostname }} is now running kernel {{ post_reboot_kernel.stdout }},
-          which includes the fix for {{ cve_id }}.
-
-# ------------------------------------------------------------
-# End of playbook
-# ------------------------------------------------------------
+    - name: Fail if the required kernel is not running
+      ansible.builtin.fail:
+        msg: |
+          The required kernel ({{ required_kernel }}) is not running after reboot.
+          Current kernel: {{ post_reboot_kernel.stdout }}. \
+          Please investigate further.
+      when: post_reboot_kernel.stdout is version(required_kernel, '<')
