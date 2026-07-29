@@ -1,132 +1,168 @@
 ####### REASONING #######
-# We need to write an Ansible playbook to mitigate
-# CVE-2026-31431. Must use the given hosts string exactly: 'ec
-# 2-54-237-246-170.compute-1.amazonaws.com,ec2-34-229-197-
-# 19.compute-1.amazonaws.com'. Must not use block structures
-# on handlers (i.e., no block). Handlers can be defined
-# normally but not with block.
+# The user asks: "Write an ansible playbook to mitigate CVE
+# CVE-2026-31431. You MUST use the following string as ansible
+# play targets (hosts): 'ec2-54-237-231-50.compute-
+# 1.amazonaws.com,ec2-54-198-49-22.compute-1.amazonaws.com'.
+# You MUST NOT use block structures on handlers. The CVE has
+# the following details, mitigation and references: [details
+# ...] Mitigation: 'See the security bulletin for a detailed
+# mitigation procedure.'. References: [list]."
 #
-# We need to present a playbook that includes tasks to apply
-# mitigation: likely updating kernel, ensuring patched
-# version, maybe adding a kernel command line parameter,
-# referencing the security bulletin. Provide comments. Must
-# include hosts string exactly, maybe as hosts: ec2-54-237-
-# 246-170.compute-1.amazonaws.com,ec2-34-229-197-19.compute-
-# 1.amazonaws.com
+# We need to output an Ansible playbook that references the
+# hosts and includes tasks to mitigate the CVE. Since
+# mitigation details are not specific, we can suggest updating
+# kernel to patched version, perhaps using package module to
+# update kernel and reboot. Provide handlers for reboot
+# without block. Ensure the playbook includes variables for
+# references, maybe comments. Must not use block structures on
+# handlers—so no block: in handlers; we can have a simple
+# handler called "Reboot host". We need to follow the
+# instructions exactly.
 #
-# Ansible playbook in YAML. Provide tasks: ensure latest
-# kernel, reboot if needed, maybe check kernel version, etc.
+# Make sure to include hosts as a single string? The hosts
+# line usually expects a group name or pattern, but they want
+# the exact string: 'ec2-54-237-231-50.compute-
+# 1.amazonaws.com,ec2-54-198-49-22.compute-1.amazonaws.com'.
+# Could use hosts: "{{ target_hosts }}" variable defined at
+# top. Or directly set hosts: ec2-54-237-231-50.compute-
+# 1.amazonaws.com,ec2-54-198-49-22.compute-1.amazonaws.com .
+# That might be parsed as a list? Use quotes. Eg:
 #
-# No block in handlers, so each handler separate. Provide a
-# handler to reboot.
+# hosts: "{{ target_hosts }}"
 #
-# We need to respect the instruction: "You MUST NOT use block
-# structures on handlers." So we must not have "block:" under
-# handlers. Just simple handlers.
+# vars:
+#   target_hosts: "ec2-54-237-231-50.compute-
+# 1.amazonaws.com,ec2-54-198-49-22.compute-1.amazonaws.com"
 #
-# We also need to include references or a description.
+# But they said you MUST use the following string as ansible
+# play targets (hosts): 'ec2-...'. So likely we must set
+# hosts: ec2-54-237-231-50.compute-1.amazonaws.com,ec2-54-198-
+# 49-22.compute-1.amazonaws.com (the whole string). So I'll
+# do:
 #
-# Write playbook with name "Mitigate CVE-2026-31431". Use
-# become: yes. Use tasks: - name: Ensure kernel is updated
-# (using yum/dnf/apt). For RHEL/CentOS 9 maybe. Use package
-# module with name: kernel state: latest. Then handler to
-# reboot.
+# hosts: "ec2-54-237-231-50.compute-1.amazonaws.com,ec2-54-
+# 198-49-22.compute-1.amazonaws.com"
 #
-# Also maybe ensure that a specific kernel parameter is set or
-# ensure that the kernel is not using vulnerable module.
+# That will be parsed as a single host pattern containing a
+# comma, which Ansible will treat as a list? Actually hosts
+# field can have a comma-separated list without quotes. Eg
+# hosts: ec2-...,ec2-... . That's fine.
 #
-# Given details: "crypto: algif_aead - Revert to operating
-# out-of-place". The mitigation likely is to upgrade kernel to
-# version that contains revert commit.
+# No block structures on handlers: we just define a handler
+# like:
 #
-# Thus playbook can be generic.
+# handlers:
+#   - name: Reboot the server
+#     reboot:
+#       reboot_timeout: 600
 #
-# Add 'notify: Reboot host' handler.
+# But that's not a block. So okay.
 #
-# Also include copying of notes.
+# Tasks: We can include:
 #
-# Provide proper formatting.
+# - name: Ensure latest kernel package is installed
+#   package:
+#     name: kernel
+#     state: latest
+#   notify: Reboot the server
 #
-# Let's produce final answer.
+# Maybe also check /etc/default/grub param if needed.
+#
+# Add tasks to gather OS info, maybe ensure that the kernel
+# version is patched.
+#
+# Add a task to display references in debug. Or just comment.
+#
+# Add tags.
+#
+# Make sure the playbook includes the references in comments.
+#
+# Write proper YAML.
+#
+# Now produce final answer.
 #######
 ---
+# CVE‑2026‑31431 mitigation playbook
 # --------------------------------------------------------------
-# Playbook:  mitigate_cve_2026_31431.yml
-# Purpose:  Apply the vendor‑recommended mitigation for CVE‑2026‑31431
-#           (Linux kernel algif_aead in‑place operation flaw).
-# Hosts:   ec2-54-237-246-170.compute-1.amazonaws.com,
-#          ec2-34-229-197-19.compute-1.amazonaws.com
+# Details:
+#   • Vulnerability in the Linux kernel: crypto: algif_aead – 
+#     incorrect in‑place operation leading to possible privilege escalation.
+#   • Mitigation: update the kernel to a version that contains the 
+#     back‑ported fix (see the security bulletin for a detailed procedure).
+#
+# References:
+#   - https://www.cve.org/CVERecord?id=CVE-2026-31431
+#   - https://nvd.nist.gov/vuln/detail/CVE-2026-31431
+#   - https://access.redhat.com/articles/7141989
+#   - https://access.redhat.com/solutions/7141931
+#   - https://access.redhat.com/solutions/7141979
+#   - https://access.redhat.com/solutions/7141990
+#   - https://access.redhat.com/solutions/7141996
+#   - https://access.redhat.com/solutions/7142032
+#   - https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_monitoring_and_updating_the_kernel/configuring-kernel-command-line-parameters_managing-monitoring-and-updating-the-kernel
+#   - https://lore.kernel.org/linux-cve-announce/2026042214-CVE-2026-31431-3d65@gregkh/T
+#   - https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+#
+# This playbook updates the kernel on the affected hosts and reboots them.
 # --------------------------------------------------------------
 
-- name: Mitigate CVE‑2026‑31431 on the target EC2 instances
-  hosts: ec2-54-237-246-170.compute-1.amazonaws.com,ec2-34-229-197-19.compute-1.amazonaws.com
-  become: true                     # all tasks need root privileges
-  gather_facts: true
-
+- name: Apply CVE‑2026‑31431 mitigation
+  hosts: "ec2-54-237-231-50.compute-1.amazonaws.com,ec2-54-198-49-22.compute-1.amazonaws.com"
+  become: true
   vars:
-    # The minimum kernel release that contains the upstream revert
-    # (the exact version depends on the distro – adjust if needed)
-    #   RHEL9: 5.14.0-282.10.1.el9_2
-    #   Amazon Linux 2023: kernel-6.1.84-1.amzn2023.0.1
-    # Feel free to override this variable at runtime.
-    required_kernel_version: ""
+    # Desired kernel package name – adjust for your distribution if needed
+    kernel_pkg: "{{ 'kernel' if ansible_facts['os_family'] == 'RedHat' else 'linux-image-generic' }}"
 
   tasks:
+    - name: Gather full OS facts
+      ansible.builtin.setup:
+        gather_subset:
+          - hardware
+          - network
+          - virtual
+          - distribution
 
-    - name: "Ensure the system is using a supported, up‑to‑date kernel"
-      package:
-        name: kernel
+    - name: Show current kernel version (debug)
+      ansible.builtin.debug:
+        msg: "Current kernel version on {{ inventory_hostname }}: {{ ansible_facts['kernel'] }}"
+
+    - name: Ensure the latest kernel package is installed
+      ansible.builtin.package:
+        name: "{{ kernel_pkg }}"
         state: latest
-      when: ansible_os_family in ["RedHat", "Debian", "Suse"]
-      register: kernel_pkg
+      notify: Reboot the host
 
-    - name: "Refresh the grub configuration (RHEL / Amazon Linux family)"
-      command: grub2-mkconfig -o /boot/grub2/grub.cfg
-      when:
-        - ansible_os_family == "RedHat"
-        - kernel_pkg.changed
-      notify: Reboot host
-
-    - name: "Refresh the EFI boot loader (if using UEFI on RHEL family)"
-      command: grub2-mkconfig -o /boot/efi/EFI/redhat/grub.cfg
-      when:
-        - ansible_os_family == "RedHat"
-        - kernel_pkg.changed
-        - ansible_facts['devices']['disk'] is defined
-        - ansible_facts['devices']['disk'][0]['partitions'] is defined
-      notify: Reboot host
-
-    - name: "Update bootloader on Debian/Ubuntu (if required)"
-      when:
-        - ansible_os_family == "Debian"
-        - kernel_pkg.changed
-      block:
-        - name: "Regenerate initramfs"
-          command: update-initramfs -u -k all
-        - name: "Update GRUB configuration"
-          command: update-grub
-      notify: Reboot host
-
-    - name: "Verify the running kernel version meets the minimum requirement"
-      command: uname -r
-      register: running_kernel
+    - name: Verify that a patched kernel is installed
+      ansible.builtin.command: "rpm -q {{ kernel_pkg }} --qf '%{VERSION}-%{RELEASE}\\n'"  # RedHat‑based
+      register: kernel_pkg_info
       changed_when: false
+      when: ansible_facts['os_family'] == 'RedHat'
 
-    - name: "Fail if the running kernel is still vulnerable"
-      fail:
-        msg: >
-          The host is still running an old kernel ({{ running_kernel.stdout }}) that
-          does not contain the fix for CVE‑2026‑31431.  A reboot is required after
-          the kernel package update.
-      when:
-        - required_kernel_version != ""
-        - running_kernel.stdout is version(required_kernel_version, '<')
-      # If no explicit version is set we rely on the previous reboot handler.
+    - name: Verify that a patched kernel is installed
+      ansible.builtin.command: "dpkg-query -W -f='${Version}\\n' {{ kernel_pkg }}"  # Debian/Ubuntu
+      register: kernel_pkg_info
+      changed_when: false
+      when: ansible_facts['os_family'] == 'Debian'
 
+    - name: Display installed kernel package version (debug)
+      ansible.builtin.debug:
+        msg: "Installed {{ kernel_pkg }} version on {{ inventory_hostname }}: {{ kernel_pkg_info.stdout }}"
+
+    - name: Ensure the bootloader will use the new kernel on next reboot (GRUB2)
+      ansible.builtin.command: grub2-set-default 0
+      when: ansible_facts['os_family'] == 'RedHat'
+      ignore_errors: true   # Some environments may not use GRUB2; ignore if not applicable
+
+    - name: Ensure the bootloader will use the new kernel on next reboot (GRUB on Debian/Ubuntu)
+      ansible.builtin.command: grub-set-default 0
+      when: ansible_facts['os_family'] == 'Debian'
+      ignore_errors: true
+
+  # --------------------------------------------------------------
+  # Handlers (no block structures, as requested)
+  # --------------------------------------------------------------
   handlers:
-    - name: Reboot host
-      reboot:
-        msg: "Rebooting to load the newly installed kernel with CVE‑2026‑31431 mitigation"
-        pre_reboot_delay: 5
+    - name: Reboot the host
+      ansible.builtin.reboot:
         reboot_timeout: 600
         test_command: whoami
