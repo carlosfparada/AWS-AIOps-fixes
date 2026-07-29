@@ -67,13 +67,11 @@
           - https://www.cve.org/CVERecord?id=CVE-2026-31431
           - https://nvd.nist.gov/vuln/detail/CVE-2026-31431
           - https://access.redhat.com/articles/7141989
-      ignore_errors: true                         # always succeed
 
     - name: "Ensure the latest security‑only update metadata is downloaded"
       command: "{{ update_cmd }}"
       register: update_info
       changed_when: false
-      ignore_errors: true
 
     - name: "Install the latest patched kernel package"
       package:
@@ -81,7 +79,6 @@
         state: latest
       register: kernel_update
       notify: Reboot after kernel update
-      ignore_errors: true
 
     - name: "Verify that the running kernel is the newly installed one"
       shell: |
@@ -94,12 +91,10 @@
         fi
       register: kernel_check
       changed_when: kernel_check.stdout == "NEEDS_REBOOT"
-      ignore_errors: true
 
     - name: "Trigger reboot if a newer kernel is installed but not running"
       when: kernel_check.stdout == "NEEDS_REBOOT"
       meta: flush_handlers                         # run the reboot handler now
-      ignore_errors: true
 
   handlers:
 
@@ -107,4 +102,3 @@
       ansible.builtin.reboot:
         reboot_timeout: 600
         test_command: whoami
-      ignore_errors: true
