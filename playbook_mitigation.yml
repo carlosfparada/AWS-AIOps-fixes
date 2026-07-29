@@ -1,132 +1,181 @@
 ####### REASONING #######
-# We need to write an ansible playbook. Must use hosts string
-# exactly as given: 'ec2-3-84-172-241.compute-
-# 1.amazonaws.com,ec2-3-88-254-183.compute-1.amazonaws.com'.
+# We need to write an Ansible playbook that mitigates
+# CVE-2026-53359 as described. Must target the two hosts: 'ec2
+# -54-237-28-92.compute-1.amazonaws.com,ec2-34-230-26-
+# 219.compute-1.amazonaws.com'. Must not use block structure
+# on handlers. Must use ignore_errors: true to make the
+# playbook always succeed.
 #
-# We must not use block structure on handlers. Must use
-# ignore_errors: true to make playbook always succeed.
+# We need to perform steps:
 #
-# We need to mitigate CVE CVE-2026-31431. The mitigation
-# description is just "See the security bulletin for a
-# detailed mitigation procedure." So perhaps we need to ensure
-# kernel is updated, maybe install latest kernel. Or apply a
-# patch. Since the details mention reverting a commit, but we
-# can just ensure we update to a patched kernel via package
-# manager.
+# - Create file in
+# /etc/modprobe.d/cve-2026-53359-mitigation.conf with options
+# lines.
 #
-# We might include tasks: gather facts, ensure latest kernel
-# version installed (e.g., using yum/dnf on RHEL). Use the
-# references list maybe as comments.
+# - Possibly check if modules loaded; if loaded, remove them
+# with modprobe -r.
 #
-# Include a handler to reboot after kernel update, but cannot
-# use block structure. Handlers can be defined normally
-# without block.
+# - Validate nested disabled by reading sysfs files (maybe use
+# command to cat and register).
 #
-# Make ignore_errors: true on tasks.
+# But we need simple playbook.
 #
-# Make playbook always succeed: we can set any task
-# ignore_errors: true. Also maybe set 'failed_when: false'.
+# We also need handlers to restart?? Not needed.
 #
-# We need condition: Use the hosts string exactly (including
-# quotes?). In playbook, hosts: "ec2-3-84-172-241.compute-
-# 1.amazonaws.com,ec2-3-88-254-183.compute-1.amazonaws.com".
-# Could be a list: hosts: ec2-3-84-172-241.compute-
-# 1.amazonaws.com,ec2-3-88-254-183.compute-1.amazonaws.com
+# But we could have a handler to reload sysctl? Not needed.
 #
-# Better to put as 'ec2-3-84-172-241.compute-
-# 1.amazonaws.com,ec2-3-88-254-183.compute-1.amazonaws.com'
+# But we must not use block structure on handlers. Means if we
+# define handlers, they should not be inside a block. That's
+# fine.
 #
-# Now write the playbook YAML with proper format.
+# We can have tasks with ignore_errors: true to ensure
+# success.
 #
-# Include a description comment with CVE details and
-# references.
+# We need to ensure the playbook always succeeds; we might set
+# failed_when: false or ignore_errors.
 #
-# Add tasks: - name: Ensure latest kernel is installed (using
-# package name kernel). Use dnf module. Use "state: latest".
-# ignore_errors: true.
+# We'll write three tasks:
 #
-# Then - name: Reboot if kernel was updated (register
-# variable). Use reboot module with when. Also ignore_errors.
+# 1. Check if kvm_intel module loaded: use command: lsmod |
+# grep -w kvm_intel, register result, ignore errors.
 #
-# Define handler for reboot? Could just use task with reboot
-# module.
+# 2. If loaded, remove with modprobe -r kvm_intel (or
+# kvm_amd). Use when condition.
 #
-# But they said not to use block structure on handlers; we can
-# have a handler defined without block.
+# 3. Same for kvm_amd.
 #
-# E.g., handlers:
-#   - name: reboot host
-#     reboot:
-#       reboot_timeout: 300
-#     ignore_errors: true
+# But we can combine using loop.
 #
-# Then tasks: - name: Install latest kernel; use dnf; notify:
-# reboot host.
+# Alternatively simpler: Use modprobe to unload both modules,
+# ignoring errors if they are not loaded.
 #
-# Make ignore_errors true on task.
+# Task: name: Remove kvm_intel module if loaded, command:
+# modprobe -r kvm_intel, ignore_errors: true.
 #
-# Ok.
+# Same for kvm_amd.
 #
-# Add tags perhaps.
+# Then create config file with lineinfile or copy.
 #
-# Now produce final answer with the playbook.
+# Task: name: Deploy mitigation modprobe config.
+#
+# Use copy module.
+#
+# Then maybe use sysctl reload? Not needed.
+#
+# Add a handler to run depmod? Not needed.
+#
+# But we might want to reload modules: Use command: modprobe
+# kvm_intel, but we disabled nested with options, might need
+# to reload them. Use notify.
+#
+# Define handler to reload kvm modules: command: modprobe -r
+# kvm_intel && modprobe kvm_intel or similar.
+#
+# But we shouldn't use block.
+#
+# Simplify: after creating file, we can run command: modprobe
+# -r kvm_intel && modprobe kvm_intel || true, ignore_errors
+# true.
+#
+# Finally, validation tasks to cat files and debug.
+#
+# Add tasks to read nested parameter values: command: cat
+# /sys/module/kvm_intel/parameters/nested, register result,
+# ignore_errors: true; debug.
+#
+# Similarly for amd.
+#
+# Make playbook.
+#
+# We need to set hosts: list of hosts. Provide connection
+# info? Not needed.
+#
+# Provide become: yes.
+#
+# Complete.
+#
+# Will produce yaml code.
+#
+# Also provide comments.
+#
+# Make sure ignore_errors: true on all tasks that could fail.
+#
+# Add 'any_errors_fatal: false' maybe not necessary.
+#
+# Write final answer.
 #######
 ---
-# -------------------------------------------------------------
-# Ansible Playbook – CVE‑2026‑31431 mitigation
-# -------------------------------------------------------------
-# CVE Details:
-#   • In the Linux kernel the algif_aead crypto interface performed an
-#     incorrect in‑place operation.  This could be abused by a low‑privileged
-#     attacker to corrupt system files and gain root.
-# Mitigation:
-#   • See the security bulletin for a detailed mitigation procedure.
-# References:
-#   • https://www.cve.org/CVERecord?id=CVE-2026-31431
-#   • https://nvd.nist.gov/vuln/detail/CVE-2026-31431
-#   • https://access.redhat.com/articles/7141989
-#   • https://access.redhat.com/solutions/7141931
-#   • https://access.redhat.com/solutions/7141979
-#   • https://access.redhat.com/solutions/7141990
-#   • https://access.redhat.com/solutions/7141996
-#   • https://access.redhat.com/solutions/7142032
-#   • https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/managing_monitoring_and_updating_the_kernel/configuring-kernel-command-line-parameters_managing-monitoring-and-updating-the-kernel
-#   • https://lore.kernel.org/linux-cve-announce/2026042214-CVE-2026-31431-3d65@gregkh/T
-#   • https://www.cisa.gov/known-exploited-vulnerabilities-catalog
-# -------------------------------------------------------------
+# --------------------------------------------------------------
+# Playbook:  cve-2026-53359‑mitigation.yml
+# Description: Disable KVM nested virtualization on the two
+#              EC2 hosts in order to mitigate the use‑after‑free
+#              bug in the Linux kernel (CVE‑2026‑53359).
+# --------------------------------------------------------------
 
-- name: Mitigate CVE‑2026‑31431 on target EC2 instances
-  hosts: "ec2-3-84-172-241.compute-1.amazonaws.com,ec2-3-88-254-183.compute-1.amazonaws.com"
-  become: true
-  gather_facts: true
+- name: Apply CVE‑2026‑53359 mitigation
+  hosts: >
+    ec2-54-237-28-92.compute-1.amazonaws.com,
+    ec2-34-230-26-219.compute-1.amazonaws.com
+  become: true                # need root to manage kernel modules & /etc files
+  gather_facts: false        # not required for this simple task set
+
+  vars:
+    mitigation_conf: /etc/modprobe.d/cve-2026-53359-mitigation.conf
+    mitigation_content: |
+      # CVE‑2026‑53359 – disable KVM nested virtualization
+      options kvm-intel nested=0
+      options kvm-amd   nested=0
 
   handlers:
-    # NOTE: No block structure is used for handlers, per the requirement.
-    - name: Reboot host to apply new kernel
-      reboot:
-        reboot_timeout: 300
+    # NOTE: No block structure is used – each handler is defined on its own line.
+    - name: reload kvm_intel module
+      command: modprobe -r kvm_intel && modprobe kvm_intel
+      ignore_errors: true
+
+    - name: reload kvm_amd module
+      command: modprobe -r kvm_amd && modprobe kvm_amd
       ignore_errors: true
 
   tasks:
-    - name: Ensure the latest kernel package is installed (RHEL / CentOS / Amazon Linux 2)
-      # The dnf/yum module automatically selects the appropriate package manager.
-      # Using state=latest pulls in any security‑fixed kernel version that addresses CVE‑2026‑31431.
-      ansible.builtin.package:
-        name: kernel
-        state: latest
-      register: kernel_update
+
+    - name: Remove kvm_intel module if it is loaded
+      command: modprobe -r kvm_intel
+      ignore_errors: true          # continue even if the module is not loaded
+
+    - name: Remove kvm_amd module if it is loaded
+      command: modprobe -r kvm_amd
+      ignore_errors: true          # continue even if the module is not loaded
+
+    - name: Deploy mitigation modprobe configuration
+      copy:
+        dest: "{{ mitigation_conf }}"
+        content: "{{ mitigation_content }}"
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - reload kvm_intel module
+        - reload kvm_amd module
       ignore_errors: true
 
-    - name: Notify reboot handler if kernel was changed
-      # The handler will only fire when the kernel package was installed/updated.
-      ansible.builtin.meta: flush_handlers
-      when: kernel_update.changed
+    - name: Verify nested virtualization is disabled for kvm_intel
+      command: cat /sys/module/kvm_intel/parameters/nested
+      register: intel_nested
+      changed_when: false
       ignore_errors: true
 
-    - name: Print mitigation reminder
-      ansible.builtin.debug:
-        msg: |
-          Mitigation for CVE‑2026‑31431 applied.
-          For detailed steps, refer to the security bulletin and the references
-          listed in the playbook header.
+    - name: Show kvm_intel nested status
+      debug:
+        msg: "kvm_intel nested parameter = {{ intel_nested.stdout | default('N/A') }}"
+      when: intel_nested is defined
+
+    - name: Verify nested virtualization is disabled for kvm_amd
+      command: cat /sys/module/kvm_amd/parameters/nested
+      register: amd_nested
+      changed_when: false
       ignore_errors: true
+
+    - name: Show kvm_amd nested status
+      debug:
+        msg: "kvm_amd nested parameter = {{ amd_nested.stdout | default('N/A') }}"
+      when: amd_nested is defined
