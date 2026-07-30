@@ -22,114 +22,120 @@
 # severity of this vulnerability.
 #######
 ####### REASONING #######
-# The user wants a simple Ansible playbook to mitigate
-# CVE-2026-31431. They specify constraints: only RHEL OS, no
-# backups, checks, validations, no software package or kernel
-# binary updates. They can reboot if needed. The mitigation
-# described is adding kernel boot arguments to block initcalls
-# (initcall_blacklist). So playbook can edit /etc/default/grub
-# to add those parameters, then rebuild GRUB config
-# (grub2-mkconfig), then optionally reboot.
+# We need to produce a simple Ansible playbook mitigating
+# CVE-2026-31431 using kernel parameters. No package updates,
+# no backups, no checks/validations. Should set sysctl or
+# kernel command line via /etc/default/grub or /etc/sysctl.d?
+# The vulnerability can be mitigated via initcall_blacklist
+# boot parameters. So we can add kernel parameter to
+# GRUB_CMDLINE_LINUX default. Then ensure updated-grub and
+# reboot.
 #
-# We must produce an Ansible playbook that applies to given
-# hosts: 'ec2-34-228-227-78.compute-1.amazonaws.com,ec2-54-90-
-# 135-180.compute-1.amazonaws.com'.
+# We need to target hosts: list provided as a string: 'ec2-34-
+# 228-227-78.compute-1.amazonaws.com,ec2-54-90-135-
+# 180.compute-1.amazonaws.com'
 #
-# Should ensure it runs on RHEL only; include condition
-# ansible_facts['os_family'] == "RedHat" and maybe version.
+# Make inventory inline maybe using hosts: all? But needs to
+# specify those hosts. Use a simple inventory file? Usually
+# playbook includes hosts: "{{ target_hosts }}" variable?
+# Could embed hosts directly as a list.
 #
-# Tasks must not include backup, checks, validation. So we
-# just edit file using lineinfile or replace, but we must be
-# careful not to include backup: lineinfile has backup
-# optional default false? It defaults to false. We'll set
-# backup: no.
+# Example:
 #
-# Add kernel boot parameters:
-# initcall_blacklist=algif_aead_init
-# initcall_blacklist=af_alg_init
-# initcall_blacklist=crypto_authenc_esn_module_init
+# - hosts: ec2-34-228-227-78.compute-1.amazonaws.com,ec2-54-
+# 90-135-180.compute-1.amazonaws.com
+#   become: yes
+#   tasks:
+#     - name: Ensure kernel parameter to blacklist initcall
+# for algif_aead
+#       lineinfile:
+#         path: /etc/default/grub
+#         regexp: '^GRUB_CMDLINE_LINUX='
+#         line:
+# 'GRUB_CMDLINE_LINUX="initcall_blacklist=algif_aead_init"'
+#         backrefs: yes
+#       notify: Rebuild grub config
 #
-# Usually we add them to GRUB_CMDLINE_LINUX in
-# /etc/default/grub. Use lineinfile to ensure line contains
-# these parameters.
+#     - name: Ensure kernel parameter to blacklist af_alg_init
+# (alternative) if needed
+#       lineinfile: ...
+#  but maybe just add both? Provide guidance that you can pick
+# one.
 #
-# Then run grub2-mkconfig -o /boot/grub2/grub.cfg for BIOS, or
-# for UEFI /etc/grub2-efi.cfg. We'll assume BIOS common path.
+# Simplify: Append to GRUB_CMDLINE_LINUX via lineinfile with
+# insertafter.
 #
-# We can add a task to reboot.
+# Then add handler: command: grub2-mkconfig -o
+# /boot/grub2/grub.cfg for RHEL 7, or grub2-mkconfig -o
+# /boot/efi/EFI/redhat/grub.cfg for RHEL 8+.
 #
-# User says no checks or validation; so we won't use when
-# checking if already present.
+# We can use fact ansible_facts['distribution_version'] to
+# choose.
 #
-# Provide playbook only.
+# But we can just run command: grub2-mkconfig -o
+# /boot/grub2/grub.cfg || grub2-mkconfig -o
+# /boot/efi/EFI/redhat/grub.cfg
 #
-# Let's craft.
+# Then a reboot task.
+#
+# Write playbook with no validation tasks.
+#
+# Provide as yaml.
+#
+# Will not include any backup flag, lineinfile default does
+# backup false. Good.
+#
+# Now produce answer.
 #######
 ---
-# Playbook to mitigate CVE‑2026‑31431 on RHEL hosts
-# ------------------------------------------------
-# • No package or kernel updates are performed.
-# • No backup, pre‑flight checks or validation steps are included.
-# • The only change is to add the required boot‑parameter blacklist
-#   entries, rebuild the GRUB config and optionally reboot the node.
-
-- name: Apply CVE‑2026‑31431 mitigation
+# -------------------------------------------------
+#  CVE‑2026‑31431 mitigation (RHEL only)
+# -------------------------------------------------
+- name: Mitigate algif_aead copy‑fail bug on RHEL hosts
   hosts: >
     ec2-34-228-227-78.compute-1.amazonaws.com,
     ec2-54-90-135-180.compute-1.amazonaws.com
-  become: true
-  gather_facts: true
-
-  # *** Restrict execution to RHEL only ***
-  pre_tasks:
-    - name: Abort if the target is not RHEL
-      fail:
-        msg: "This playbook is intended for Red Hat Enterprise Linux only."
-      when: ansible_facts['os_family'] != "RedHat"
-
+  become: true               # need root to edit GRUB and reboot
+  vars:
+    # Choose ONE of the three possible mitigations.
+    # Uncomment the line you want to apply.
+    grub_mitigation: >
+      initcall_blacklist=algif_aead_init          # most specific fix
+      #initcall_blacklist=af_alg_init           # block the whole af_alg interface
+      #initcall_blacklist=crypto_authenc_esn_module_init  # block the vulnerable algorithm only
   tasks:
 
-    # ------------------------------------------------
-    # 1. Ensure the grub configuration contains the three
-    #    initcall_blacklist entries.
-    # ------------------------------------------------
-    - name: Add initcall_blacklist entries to GRUB_CMDLINE_LINUX
+    - name: Ensure the GRUB_CMDLINE_LINUX line exists
       lineinfile:
         path: /etc/default/grub
-        regexp: '^GRUB_CMDLINE_LINUX="?([^"]*)"?$'
-        line: >-
-          GRUB_CMDLINE_LINUX="{% raw %}{{ (\\1 | default('')).split() | list
-          + ['initcall_blacklist=algif_aead_init',
-          'initcall_blacklist=af_alg_init',
-          'initcall_blacklist=crypto_authenc_esn_module_init'] | unique | join(' ') }}{% endraw %}"
-        backrefs: yes
+        regexp: '^GRUB_CMDLINE_LINUX='
+        line: 'GRUB_CMDLINE_LINUX="{{ grub_mitigation }}"'
         state: present
-        create: yes
-        # No backup, no validation
-      vars:
-        # Helper for Jinja2 string manipulation – works without extra filters
-        __dummy: ""
+        insertafter: EOF
+      notify:
+        - Rebuild GRUB configuration
 
-    # ------------------------------------------------
-    # 2. Re‑generate the GRUB configuration file.
-    # ------------------------------------------------
-    - name: Regenerate grub.cfg (BIOS systems)
-      command: grub2-mkconfig -o /boot/grub2/grub.cfg
-      args:
-        warn: false
-
-    - name: Regenerate grub.cfg (UEFI systems)
-      command: grub2-mkconfig -o /boot/efi/EFI/redhat/grub.cfg
-      args:
-        warn: false
-      when: ansible_facts['ansible_devices']['/dev/sda']['removable'] is defined
-      # (the conditional is a lightweight way to try the UEFI path on most
-      #  modern instances; if it does not exist the task will simply be skipped.)
-
-    # ------------------------------------------------
-    # 3. Reboot the host so the new kernel parameters take effect.
-    # ------------------------------------------------
-    - name: Reboot the machine to apply the new kernel command line
+    - name: Reboot the node to apply the new kernel command line
       reboot:
         reboot_timeout: 600
-        test_command: whoami
+        post_reboot_delay: 30
+        test_command: whoami      # simple sanity – does not verify the mitigation
+      when: not ansible_check_mode
+
+  # -------------------------------------------------
+  # Handlers – run only if the GRUB file was changed
+  # -------------------------------------------------
+  handlers:
+
+    - name: Rebuild GRUB configuration
+      block:
+        - name: Generate GRUB config for BIOS‑based installs (RHEL 7/8)
+          command: grub2-mkconfig -o /boot/grub2/grub.cfg
+          changed_when: true
+          ignore_errors: true
+
+        - name: Generate GRUB config for UEFI‑based installs (RHEL 8+/9)
+          command: grub2-mkconfig -o /boot/efi/EFI/redhat/grub.cfg
+          changed_when: true
+          ignore_errors: true
+      when: ansible_facts['os_family'] == 'RedHat'
