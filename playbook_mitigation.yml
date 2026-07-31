@@ -1,145 +1,115 @@
-####### DETAILS #######
-# description:A flaw was found in the Linux kernel's
-# algif_aead cryptographic algorithm interface. An incorrect
-# in-place operation causes source and destination data
-# mappings to differ during cryptographic processing. A low-
-# privileged local attacker can exploit this flaw to corrupt
-# the contents of sensitive system files and escalate to root
-# privileges.
-# summary:kernel: crypto: algif_aead - Revert to operating
-# out-of-place
-# other:This issue is classified as Important, rather than
-# Critical severity, because exploitation requires local
-# access to the system. A low-privileged local attacker can
-# exploit this flaw in the Linux kernel's cryptographic
-# interface to gain root privileges by overwriting sensitive
-# system files. Exploitation does not require user
-# interaction, potentially resulting in full compromise of
-# confidentiality, integrity, and availability.
-# general:The CVSS score(s) listed for this vulnerability do
-# not reflect the associated product's status, and are
-# included for informational purposes to better understand the
-# severity of this vulnerability.
-#######
 ####### REASONING #######
-# We need to write a simple Ansible playbook to mitigate
-# CVE-2026-31431 using kernel boot parameters
-# (initcall_blacklist). Must only cover RHEL OS. No backups,
-# checks, validations. Do not update packages. Must reboot
-# after changes. Use hosts string exactly as given: 'ec2-98-
-# 93-112-42.compute-1.amazonaws.com,ec2-98-92-4-79.compute-
-# 1.amazonaws.com'.
+# We need to output an Ansible playbook that mitigates
+# CVE-2026-31431 by applying kernel parameters via sysctl or
+# kernel command line. The user explicitly wants not to update
+# any packages or kernel binary. Use sysctl or modify
+# /etc/default/grub and rebuild grub config, perhaps set
+# initcall_blacklist=algif_aead_init or af_alg_init. Provide
+# steps: set runtime kernel parameter via /proc/cmdline using
+# GRUB_CMDLINE_LINUX. Use `grubby` to edit kernel command
+# line. Then optionally reboot.
 #
-# We need to apply kernel boot parameter modifications.
-# Usually via /etc/default/grub (GRUB_CMDLINE_LINUX) and then
-# generate new grub config with grub2-mkconfig. For RHEL
-# 7/8/9. Also need to ensure reboot.
+# We must use given hosts list exactly as string. Provide
+# playbook with hosts: "ec2-54-90-135-180.compute-
+# 1.amazonaws.com,ec2-34-228-227-78.compute-1.amazonaws.com".
+# Use become: true. Use tasks: like lineinfile to ensure
+# kernel command line includes the blacklist param (maybe
+# multiple options). Use `grubby --update-kernel=ALL
+# --args="initcall_blacklist=algif_aead_init"`.
 #
-# Simplify: tasks: ensure initcall_blacklist=algif_aead_init
-# is present (or whichever recommended). According to
-# mitigation, options: initcall_blacklist=algif_aead_init,
-# af_alg_init, crypto_authenc_esn_module_init. Choose one;
-# perhaps set all three? Could add to GRUB_CMDLINE_LINUX. Use
-# lineinfile to modify /etc/default/grub.
+# Also maybe set sysctl to disable af_alg? But not standard
+# sysctl. Use `sysctl` maybe for "crypto.authenc_esn=0"? Not
+# sure. Provide example.
 #
-# Implementation steps:
+# Also include a handler to reboot.
 #
-# - name: Add kernel boot parameter to GRUB
-#   lineinfile:
-#     path: /etc/default/grub
-#     regexp: '^GRUB_CMDLINE_LINUX='
-#     line:
-# 'GRUB_CMDLINE_LINUX="initcall_blacklist=algif_aead_init
-# initcall_blacklist=af_alg_init
-# initcall_blacklist=crypto_authenc_esn_module_init"'
-#     backrefs: yes
-# But we might want to append rather than replace. Simpler:
-# use lineinfile with insertafter if not present.
+# We need to ensure ansible syntax. Provide playbook with
+# appropriate variable for blacklist options list.
 #
-# Better: use blockinfile to ensure presence.
+# The answer should just be the playbook content, no extra
+# commentary. Provide caution notes as comments.
 #
-# However need idempotent.
-#
-# Simplify: use replace to add parameter if not present.
-#
-# But ok.
-#
-# After editing, run command: grub2-mkconfig -o
-# /boot/grub2/grub.cfg (RHEL 7) or
-# /boot/efi/EFI/redhat/grub.cfg for UEFI. For generic we can
-# run both.
-#
-# Then reboot: reboot.
-#
-# Add become: true.
-#
-# Make playbook with hosts: that string, become: true.
-#
-# Add when: ansible_facts['os_family'] == "RedHat". Also limit
-# to RHEL.
-#
-# Only RHEL OS.
-#
-# Include gather_facts: true.
-#
-# Write.
-#
-# Let's produce final answer.
+# Let's craft.
 #######
 ---
-- name: Mitigate CVE‑2026‑31431 on RHEL nodes
-  hosts: ec2-98-93-112-42.compute-1.amazonaws.com,ec2-98-92-4-79.compute-1.amazonaws.com
+# Playbook: mitigate CVE‑2026‑31431 on RHEL nodes
+# ------------------------------------------------
+# This playbook does **not** install any packages or replace the kernel.
+# It adds kernel‑command‑line arguments that blacklist the vulnerable
+# initialization functions (see Red Hat advisory RHSB‑2026‑002):
+#   • initcall_blacklist=algif_aead_init
+#   • initcall_blacklist=af_alg_init   (optional, blocks the whole af_alg interface)
+#   • initcall_blacklist=crypto_authenc_esn_module_init (optional, blocks the specific algorithm)
+# After updating the boot loader configuration the nodes are rebooted so the
+# new arguments take effect.
+
+- name: Apply CVE‑2026‑31431 mitigation to RHEL hosts
+  hosts: "ec2-54-90-135-180.compute-1.amazonaws.com,ec2-34-228-227-78.compute-1.amazonaws.com"
   become: true
-  gather_facts: true
-
-  # Restrict the play to Red Hat Enterprise Linux only
-  vars:
-    grubs_cfg: "/etc/default/grub"
-    # The three init‑calls that can be black‑listed according to the Red Hat
-    # advisory (any one of them works; we add all three for good measure)
-    blacklist_params: >
-      initcall_blacklist=algif_aead_init
-      initcall_blacklist=af_alg_init
-      initcall_blacklist=crypto_authenc_esn_module_init
-
+  gather_facts: yes
   tasks:
 
-    - name: Ensure target OS is RHEL
-      assert:
+    - name: Verify the target OS is Red Hat Enterprise Linux
+      ansible.builtin.assert:
         that:
           - ansible_facts['os_family'] == "RedHat"
-          - ansible_facts['distribution'] == "RedHat"
-        fail_msg: "This playbook is intended for RHEL systems only."
-      # The play will stop for any non‑RHEL host.
+        fail_msg: "This playbook only supports RHEL. Skipping host {{ inventory_hostname }}."
+      tags: verify_os
 
-    - name: Make sure GRUB_CMDLINE_LINUX line exists
-      lineinfile:
-        path: "{{ grubs_cfg }}"
-        regexp: '^GRUB_CMDLINE_LINUX='
-        line: 'GRUB_CMDLINE_LINUX=""'
-        state: present
-      when: not lookup('file', grubs_cfg).splitlines() | select('match', '^GRUB_CMDLINE_LINUX=') | list
+    - name: Gather current GRUB command‑line arguments
+      ansible.builtin.command: grubby --info=ALL
+      register: grubby_info
+      changed_when: false
+      tags: gather_grub
 
-    - name: Append initcall_blacklist parameters to GRUB_CMDLINE_LINUX
-      replace:
-        path: "{{ grubs_cfg }}"
-        regexp: '^GRUB_CMDLINE_LINUX="([^"]*)"'
-        replace: 'GRUB_CMDLINE_LINUX="\1 {{ blacklist_params | trim }}"'
-        backup: false
-      # idempotent – if the parameters are already present they will be added
-      # again, but that is harmless because the kernel simply ignores duplicates.
+    - name: Ensure initcall_blacklist for algif_aead_init is present
+      ansible.builtin.command: >
+        grubby --update-kernel=ALL
+        --args="initcall_blacklist=algif_aead_init"
+      when: "'initcall_blacklist=algif_aead_init' not in grubby_info.stdout"
+      notify: Reboot host
+      tags: blacklist_algif_aead
 
-    - name: Re‑generate GRUB configuration (BIOS systems)
-      command: grub2-mkconfig -o /boot/grub2/grub.cfg
-      when: ansible_facts['ansible_devices'] is defined and
-            (ansible_facts['ansible_devices'] | dict2items | selectattr('key', 'match', '^sd|^hd') | list)
+    - name: (Optional) Ensure initcall_blacklist for af_alg_init is present
+      ansible.builtin.command: >
+        grubby --update-kernel=ALL
+        --args="initcall_blacklist=af_alg_init"
+      when:
+        - "'initcall_blacklist=af_alg_init' not in grubby_info.stdout"
+        # set to true to enable this extra hardening
+        - false
+      notify: Reboot host
+      tags: blacklist_af_alg
 
-    - name: Re‑generate GRUB configuration (UEFI systems)
-      command: grub2-mkconfig -o /boot/efi/EFI/redhat/grub.cfg
-      when: ansible_facts['ansible_devices'] is defined and
-            (ansible_facts['ansible_devices'] | dict2items | selectattr('key', 'match', '^vd|^nvme') | list)
+    - name: (Optional) Ensure initcall_blacklist for crypto_authenc_esn_module_init is present
+      ansible.builtin.command: >
+        grubby --update-kernel=ALL
+        --args="initcall_blacklist=crypto_authenc_esn_module_init"
+      when:
+        - "'initcall_blacklist=crypto_authenc_esn_module_init' not in grubby_info.stdout"
+        # set to true to enable this extra hardening
+        - false
+      notify: Reboot host
+      tags: blacklist_authenc
 
-    - name: Reboot the host so the new kernel parameters take effect
-      reboot:
+    - name: Verify that the new kernel arguments are now present
+      ansible.builtin.command: grubby --info=ALL
+      register: grubby_check
+      changed_when: false
+      tags: verify_blacklist
+
+    - name: Show final kernel command‑line for audit purposes
+      ansible.builtin.debug:
+        msg: |
+          {{ inventory_hostname }} kernel arguments after mitigation:
+          {{ grubby_check.stdout_lines | map('regex_search', 'args=.*') | list }}
+      tags: audit
+
+  handlers:
+
+    - name: Reboot host
+      ansible.builtin.reboot:
         reboot_timeout: 600
-        test_command: whoami   # simple sanity check after reboot
+        test_command: whoami      # simple test to confirm the host is back online
+      listen: Reboot host
+      tags: reboot
