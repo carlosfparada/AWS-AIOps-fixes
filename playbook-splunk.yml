@@ -1,33 +1,24 @@
----
-- name: Remediate Splunk SSH login failure
+- name: Block offending IP from SSH login failures
   hosts: all
-  become: true
+  gather_facts: false
   vars:
-    offending_ip: "176.79.197.147"
+    offending_ip: "{{ lookup('env', 'OFFENDING_IP') | default('') }}"
   tasks:
-    - name: Ensure iptables package is installed
-      ansible.builtin.package:
-        name: iptables
-        state: present
+    - name: Ensure offending_ip is provided
+      assert:
+        that: offending_ip != ''
+        fail_msg: "offending_ip variable must be set"
 
-    - name: Block offending IP using iptables
-      ansible.builtin.iptables:
-        chain: INPUT
-        source: "{{ offending_ip }}"
-        destination_port: 22
-        protocol: tcp
-        jump: DROP
-        state: present
-        comment: "Blocked after repeated failed SSH login attempts"
-
-    - name: Save iptables rules persistently
-      ansible.builtin.command: service iptables save
-      when: ansible_facts['os_family'] == "RedHat"
-
-    - name: Verify rule is present
-      ansible.builtin.command: iptables -L INPUT -v -n
-      register: iptables_output
-
-    - name: Debug iptables output
-      ansible.builtin.debug:
-        var: iptables_output.stdout_lines
+    - name: Block offending IP in firewall/ACL
+      # Example using ios_acl; adjust module and parameters for your device type
+      ios_acl:
+        config:
+          - name: BLOCK_SSH_FAIL
+            type: standard
+            state: present
+            rules:
+              - action: deny
+                source: "{{ offending_ip }}"
+        purge: false
+        # connection details should be provided via inventory or vars
+      when: offending_ip != ''
