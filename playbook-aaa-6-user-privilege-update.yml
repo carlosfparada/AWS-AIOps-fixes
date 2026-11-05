@@ -1,0 +1,36 @@
+---
+- name: Remediate unauthorized privilege escalation detected by AAA syslog
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+  tasks:
+    - name: Assert required variables are defined, non-empty, and not protected accounts
+      ansible.builtin.assert:
+        that:
+          - host_name is defined
+          - host_name | string | length > 0
+          - target_username is defined
+          - target_username | string | length > 0
+          - target_username | lower not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "Required extra_vars missing, empty, or a protected account was targeted; aborting."
+        quiet: true
+
+    - name: Downgrade flagged local user to a safe privilege level
+      cisco.ios.ios_user:
+        name: "{{ target_username }}"
+        privilege: 1
+        state: present
+
+    - name: Verify resulting user configuration (read-only)
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ target_username }}"
+      register: verify_result
+      failed_when: false
+      changed_when: false
+
+    - name: Report verification output
+      ansible.builtin.debug:
+        msg: "{{ verify_result.stdout_lines | default(['verification skipped in check mode']) }}"
