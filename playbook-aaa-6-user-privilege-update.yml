@@ -1,36 +1,37 @@
 ---
-- name: Remediate unauthorized privilege escalation detected by AAA syslog
+- name: Remediate AAA-6-USER_PRIVILEGE_UPDATE - remove unexpected privileged local user
   hosts: "{{ host_name }}"
   connection: ansible.netcommon.network_cli
   gather_facts: false
   vars:
     ansible_network_os: cisco.ios.ios
+
   tasks:
-    - name: Assert required variables are defined, non-empty, and not protected accounts
+    - name: Validate required variables and reject protected accounts
       ansible.builtin.assert:
         that:
-          - host_name is defined
-          - host_name | string | length > 0
-          - target_username is defined
-          - target_username | string | length > 0
-          - target_username | lower not in ['admin', 'ansible', 'ansible_user']
-        fail_msg: "Required extra_vars missing, empty, or a protected account was targeted; aborting."
-        quiet: true
+          - target_user is defined and target_user | string | length > 0
+          - target_user is defined and target_user | lower not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: Refusing to remediate - target_user is missing, empty, or a protected account
+        success_msg: Required variables validated
 
-    - name: Downgrade flagged local user to a safe privilege level
+    - name: Remove the unexpected privileged local user account
       cisco.ios.ios_user:
-        name: "{{ target_username }}"
-        privilege: 1
-        state: present
+        name: "{{ target_user }}"
+        state: absent
+      register: removal_result
 
-    - name: Verify resulting user configuration (read-only)
+    - name: Verify the user is no longer configured (read-only)
       cisco.ios.ios_command:
         commands:
-          - "show running-config | include username {{ target_username }}"
+          - show running-config | include username {{ target_user }}
       register: verify_result
       failed_when: false
       changed_when: false
 
-    - name: Report verification output
-      ansible.builtin.debug:
-        msg: "{{ verify_result.stdout_lines | default(['verification skipped in check mode']) }}"
+    - name: Confirm the removal succeeded
+      ansible.builtin.assert:
+        that:
+          - verify_result.stdout[0] is not search('username\\s+' ~ target_user ~ '(\\s|$)')
+        fail_msg: User {{ target_user }} is still present on the device
+        success_msg: User {{ target_user }} removed successfully
