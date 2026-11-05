@@ -1,0 +1,39 @@
+---
+- name: Remediate unauthorized local user privilege escalation (AAA)
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+
+  tasks:
+    - name: Assert required variables are defined, non-empty, and not protected
+      ansible.builtin.assert:
+        that:
+          - cisco_user_name is defined and cisco_user_name | length > 0
+          - cisco_user_name is defined and (cisco_user_name | lower) not in ['admin', 'ansible', 'ansible_user', 'root', 'cisco']
+        fail_msg: >-
+          cisco_user_name must be defined, non-empty, and must not be a
+          protected account (admin, ansible, ansible_user, root, cisco).
+        quiet: true
+
+    - name: Remove rogue local user that received unauthorized privilege escalation
+      cisco.ios.ios_user:
+        name: "{{ cisco_user_name }}"
+        state: absent
+      register: user_removal
+
+    - name: Verify the local user is no longer configured (read-only)
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ cisco_user_name }}"
+      register: verify_user
+      failed_when: false
+      changed_when: false
+
+    - name: Report remediation summary
+      ansible.builtin.debug:
+        msg:
+          - "Remediation complete for user '{{ cisco_user_name }}'."
+          - "Configuration changed: {{ user_removal.changed | default(false) }}"
+          - "Verification output: {{ verify_user.stdout | default(['']) }}"
