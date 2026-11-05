@@ -1,0 +1,42 @@
+---
+- name: Remediate USER_PRIVILEGE_UPDATE - remove unauthorized privileged account
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+
+  vars:
+    protected_accounts:
+      - admin
+      - ansible
+      - ansible_user
+
+  tasks:
+    - name: Assert variables are defined and target is not protected
+      ansible.builtin.assert:
+        that:
+          - host_name is defined and host_name | length > 0
+          - device_ip is defined and device_ip | length > 0
+          - unauthorized_user is defined and unauthorized_user | length > 0
+          - unauthorized_user | lower not in protected_accounts
+          - "unauthorized_user is not search('(?i)mgmt|management')"
+        fail_msg: "Refusing to run: missing variables or protected target"
+        success_msg: "Pre-checks passed for {{ unauthorized_user }} on {{ device_ip }}"
+
+    - name: Remove unauthorized account that received privilege escalation
+      cisco.ios.ios_user:
+        name: "{{ unauthorized_user }}"
+        state: absent
+      register: removal_result
+
+    - name: Verify the account no longer exists on the device
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ unauthorized_user }}"
+      register: verify_result
+
+    - name: Confirm removal succeeded
+      ansible.builtin.assert:
+        that:
+          - 'verify_result.stdout[0] is not search("username\s+" ~ unauthorized_user ~ "(\s|$)")'
+        success_msg: "Account {{ unauthorized_user }} removed from {{ device_ip }}"
+        fail_msg: "Account {{ unauthorized_user }} still present on {{ device_ip }}; manual review required"
