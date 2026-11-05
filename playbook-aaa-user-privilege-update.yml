@@ -1,0 +1,54 @@
+---
+- name: Remediate unauthorized privilege escalation on Cisco IOS device
+  hosts: "{{ host_name }}"
+  gather_facts: false
+  connection: ansible.netcommon.network_cli
+
+  vars:
+    ansible_network_os: cisco.ios.ios
+    protected_accounts:
+      - admin
+      - root
+      - cisco
+      - system
+      - netops
+      - maintenance
+
+  tasks:
+    - name: Assert all required variables are defined and safe
+      ansible.builtin.assert:
+        that:
+          - host_name is defined
+          - host_name | length > 0
+          - user_name is defined
+          - user_name | length > 0
+          - user_name | lower not in protected_accounts
+          - user_name | lower != (ansible_user | default('') | lower)
+        fail_msg: "Required variables missing or a protected account was supplied. Refusing to remediate."
+        success_msg: "All required variables are present and safe."
+        quiet: true
+
+    - name: Remove privilege level 15 from the flagged local user
+      cisco.ios.ios_config:
+        lines:
+          - "no username {{ user_name }} privilege"
+      register: priv_removal
+
+    - name: Read current running configuration for the flagged user
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ user_name }}"
+      register: user_config
+      changed_when: false
+      failed_when: false
+
+    - name: Display resulting user configuration
+      ansible.builtin.debug:
+        var: user_config.stdout_lines
+
+    - name: Verify the user no longer has privilege 15
+      ansible.builtin.assert:
+        that:
+          - ansible_check_mode or ('privilege 15' not in (user_config.stdout[0] | default('')))
+        fail_msg: "User {{ user_name }} still has privilege 15 configured."
+        success_msg: "User {{ user_name }} no longer has privilege 15."
