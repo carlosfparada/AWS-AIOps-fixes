@@ -1,36 +1,35 @@
 ---
-- name: Remediate unauthorized privilege escalation (%AAA-6-USER_PRIVILEGE_UPDATE)
+- name: Remediate unauthorized privilege escalation of suspicious local user
   hosts: "{{ host_name }}"
   connection: ansible.netcommon.network_cli
   gather_facts: false
   vars:
     ansible_network_os: cisco.ios.ios
-
   tasks:
-    - name: Assert required variables are defined and protected accounts are untouched
+    - name: Assert required variables are defined, non-empty and not protected
       ansible.builtin.assert:
         that:
           - host_name is defined and host_name | length > 0
-          - alert_username is defined and alert_username | length > 0
-          - alert_username | lower not in ['admin', 'ansible', 'ansible_user', 'root']
-        fail_msg: "Required variables missing, empty, or a protected username was supplied; no changes made."
+          - target_username is defined and target_username | length > 0
+          - target_username | lower not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "Required variables are missing, empty, or a protected account was targeted"
+        quiet: true
 
-    - name: Remove the unauthorized privileged user account
+    - name: Demote suspicious user from privilege 15 to privilege 1 (idempotent, supports check mode)
       cisco.ios.ios_user:
-        name: "{{ alert_username }}"
-        state: absent
-      register: user_removed
+        name: "{{ target_username }}"
+        privilege: 1
+        state: present
+      register: demote_result
 
-    - name: Verify the user no longer exists in the running configuration
+    - name: Verify local user privilege configuration (read-only)
       cisco.ios.ios_command:
         commands:
-          - "show running-config | include username {{ alert_username }}"
-      register: verify_output
+          - "show running-config | include username {{ target_username }}"
+      register: verify_result
       failed_when: false
       changed_when: false
 
-    - name: Report remediation result
+    - name: Report verification result
       ansible.builtin.debug:
-        msg:
-          - "User '{{ alert_username }}' removal attempted: {{ user_removed.changed | default(false) }}"
-          - "Running-config check after removal: {{ verify_output.stdout | default([]) }}"
+        msg: "{{ verify_result.stdout[0] | default('no output returned') }}"
