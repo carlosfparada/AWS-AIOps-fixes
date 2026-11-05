@@ -1,38 +1,44 @@
 ---
-- name: Remove suspicious local user elevated to privilege 15
+- name: Remediate %AAA-6-USER_PRIVILEGE_UPDATE - revoke unauthorized privilege escalation
   hosts: "{{ host_name }}"
   connection: ansible.netcommon.network_cli
   gather_facts: false
   vars:
     ansible_network_os: cisco.ios.ios
   tasks:
-    - name: Assert required variables are defined and safe
+    - name: Validate required variables and protected accounts
       ansible.builtin.assert:
         that:
           - host_name is defined
-          - host_name | length > 0
+          - host_name | string | length > 0
           - user_name is defined
-          - user_name | length > 0
-          - user_name | lower not in ['admin', 'ansible', 'ansible_user']
-        fail_msg: "Required variable user_name is missing, empty, or refers to a protected user"
+          - user_name | string | length > 0
+          - user_name | string | regex_search('^[A-Za-z0-9._-]+$') is not none
+          - user_name | lower not in ['admin', 'ansible', 'ansible_user', 'root', 'cisco']
+        fail_msg: >-
+          Refusing to run: a required variable is missing or empty, the target
+          user is invalid, or a protected account (admin, ansible, ansible_user)
+          was targeted.
         quiet: true
 
-    - name: Remove the suspicious local user account
+    - name: Demote local user to non-privileged level 1 (idempotent, check-mode safe)
       cisco.ios.ios_user:
         name: "{{ user_name }}"
-        state: absent
-      register: user_removal
+        privilege: 1
+        state: present
+      register: user_update
 
-    - name: Verify the user is gone from the running configuration (read-only)
+    - name: Verify resulting local user configuration (read-only)
       cisco.ios.ios_command:
         commands:
           - "show running-config | include username {{ user_name }}"
-      register: verify_user
+      register: verify_output
       failed_when: false
       changed_when: false
 
-    - name: Report remediation summary
+    - name: Report remediation result
       ansible.builtin.debug:
         msg:
-          - "Removal of user {{ user_name }} applied: {{ user_removal.changed | default(false) }}"
-          - "Remaining config lines for user: {{ verify_user.stdout | default('') }}"
+          - "User '{{ user_name }}' demoted to privilege 1 on {{ host_name }}."
+          - "Remediation changed device state: {{ user_update.changed | default(false) }}"
+          - "Running-config verification: {{ verify_output.stdout | default(['no output']) }}"
