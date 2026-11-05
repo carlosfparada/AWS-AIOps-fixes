@@ -1,35 +1,41 @@
 ---
-- name: Remediate unauthorized privilege escalation of suspicious local user
+- name: Remove unauthorized user granted privilege 15
   hosts: "{{ host_name }}"
   connection: ansible.netcommon.network_cli
   gather_facts: false
   vars:
     ansible_network_os: cisco.ios.ios
   tasks:
-    - name: Assert required variables are defined, non-empty and not protected
+    - name: Assert required variables are defined and not protected
       ansible.builtin.assert:
         that:
-          - host_name is defined and host_name | length > 0
-          - target_username is defined and target_username | length > 0
-          - target_username | lower not in ['admin', 'ansible', 'ansible_user']
-        fail_msg: "Required variables are missing, empty, or a protected account was targeted"
+          - host_name is defined
+          - host_name | length > 0
+          - target_user is defined
+          - target_user | length > 0
+          - target_user | lower not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "Required variable target_user is missing or protected; aborting."
         quiet: true
 
-    - name: Demote suspicious user from privilege 15 to privilege 1 (idempotent, supports check mode)
+    - name: Remove unauthorized user account
       cisco.ios.ios_user:
-        name: "{{ target_username }}"
-        privilege: 1
-        state: present
-      register: demote_result
+        name: "{{ target_user }}"
+        state: absent
+      register: user_remove
 
-    - name: Verify local user privilege configuration (read-only)
+    - name: Confirm user is no longer configured (read-only)
       cisco.ios.ios_command:
         commands:
-          - "show running-config | include username {{ target_username }}"
-      register: verify_result
+          - "show running-config | include username {{ target_user }}"
+      register: verify_user
       failed_when: false
       changed_when: false
 
     - name: Report verification result
-      ansible.builtin.debug:
-        msg: "{{ verify_result.stdout[0] | default('no output returned') }}"
+      ansible.builtin.assert:
+        that:
+          - "('username ' ~ target_user ~ ' ') not in verify_user.stdout[0]"
+        fail_msg: "User {{ target_user }} still present after remediation."
+        success_msg: "User {{ target_user }} removed; privilege escalation remediated."
+      changed_when: false
+      when: not ansible_check_mode
