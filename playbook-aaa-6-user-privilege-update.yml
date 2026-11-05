@@ -1,37 +1,36 @@
 ---
-- name: Remediate %AAA-6-USER_PRIVILEGE_UPDATE - remove unauthorized privileged local user
+- name: Remediate unauthorized privilege escalation (%AAA-6-USER_PRIVILEGE_UPDATE)
   hosts: "{{ host_name }}"
   connection: ansible.netcommon.network_cli
   gather_facts: false
   vars:
     ansible_network_os: cisco.ios.ios
+
   tasks:
-    - name: Assert every required variable is defined, non-empty and does not target a protected account
+    - name: Assert required variables are defined and protected accounts are untouched
       ansible.builtin.assert:
         that:
-          - host_name is defined and host_name | string | length > 0
-          - user_name is defined and user_name | string | length > 0
-          - user_name | string | lower not in ['admin', 'ansible', 'ansible_user']
-        fail_msg: "Refusing to run: host_name and user_name must be defined and non-empty, and user_name must not be a protected management account."
-        success_msg: "Input validation passed."
+          - host_name is defined and host_name | length > 0
+          - alert_username is defined and alert_username | length > 0
+          - alert_username | lower not in ['admin', 'ansible', 'ansible_user', 'root']
+        fail_msg: "Required variables missing, empty, or a protected username was supplied; no changes made."
 
-    - name: Remove the unauthorized local user reported by the AAA privilege update alert
+    - name: Remove the unauthorized privileged user account
       cisco.ios.ios_user:
-        name: "{{ user_name }}"
+        name: "{{ alert_username }}"
         state: absent
-      register: user_removal
+      register: user_removed
 
-    - name: Verify the user is no longer present in the running configuration (read-only)
+    - name: Verify the user no longer exists in the running configuration
       cisco.ios.ios_command:
         commands:
-          - "show running-config | include username {{ user_name }}"
-      register: verify_user
+          - "show running-config | include username {{ alert_username }}"
+      register: verify_output
       failed_when: false
       changed_when: false
 
     - name: Report remediation result
       ansible.builtin.debug:
         msg:
-          - "Remediation of AAA-6-USER_PRIVILEGE_UPDATE on {{ host_name }} finished."
-          - "Removal of user '{{ user_name }}' reported changed: {{ user_removal.changed | default(false) }}"
-          - "Post-change configuration check output: {{ verify_user.stdout | default(['no output']) | first }}"
+          - "User '{{ alert_username }}' removal attempted: {{ user_removed.changed | default(false) }}"
+          - "Running-config check after removal: {{ verify_output.stdout | default([]) }}"
