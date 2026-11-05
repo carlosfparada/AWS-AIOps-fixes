@@ -1,24 +1,59 @@
-- name: Block offending IP from SSH login failures
-  hosts: all
+---
+# ============================================================
+# Remediation: Cisco IOS %SEC_LOGIN-1-QUIET_MODE_ON
+# ============================================================
+# Problem:
+#   The device generated %SEC_LOGIN-1-QUIET_MODE_ON after repeated failed
+#   SSH authentication attempts on localport 22. IOS entered login quiet
+#   mode and now silently drops management connections (sl_def_acl),
+#   locking operators out of the box.
+#
+# Fix (minimal, idempotent, non-destructive):
+#   - Take the device out of login quiet mode with "no login quiet-mode"
+#     so management access is restored. The login blocking policy
+#     (login block-for ...) remains configured and keeps protecting the
+#     device. This is a no-op on the device when quiet mode is already off.
+#
+# Notes:
+#   - All parameters are provided via extra_vars (host_name). Nothing
+#     from the alert is hardcoded.
+#   - cisco.ios.ios_config supports check mode natively.
+#   - cisco.ios.ios_command does not support check mode on older versions
+#     of the cisco.ios collection (raw command runner), so the verification
+#     task is guarded with `when: not ansible_check_mode` and is safely
+#     skipped during check-mode validations.
+- name: Remediate Cisco IOS login quiet mode (SEC_LOGIN QUIET_MODE_ON)
+  hosts: "{{ host_name }}"
   gather_facts: false
-  vars:
-    offending_ip: "{{ lookup('env', 'OFFENDING_IP') | default('') }}"
-  tasks:
-    - name: Ensure offending_ip is provided
-      assert:
-        that: offending_ip != ''
-        fail_msg: "offending_ip variable must be set"
+  connection: ansible.netcommon.network_cli
 
-    - name: Block offending IP in firewall/ACL
-      # Example using ios_acl; adjust module and parameters for your device type
-      ios_acl:
-        config:
-          - name: BLOCK_SSH_FAIL
-            type: standard
-            state: present
-            rules:
-              - action: deny
-                source: "{{ offending_ip }}"
-        purge: false
-        # connection details should be provided via inventory or vars
-      when: offending_ip != ''
+  vars:
+    ansible_network_os: cisco.ios.ios
+
+  tasks:
+    - name: Exit login quiet mode and restore management access
+      cisco.ios.ios_config:
+        lines:
+          - no login quiet-mode
+      register: quiet_mode_result
+
+    - name: Report applied configuration commands
+      ansible.builtin.debug:
+        msg: >-
+          Quiet mode disabled on {{ inventory_hostname }};
+          commands applied: {{ quiet_mode_result.commands | default([]) }}
+      when: quiet_mode_result.changed | bool
+
+    - name: Verify login quiet mode is disabled (post-fix verification)
+      cisco.ios.ios_command:
+        commands:
+          - show login
+      register: login_status
+      when: not ansible_check_mode
+
+    - name: Display verification output
+      ansible.builtin.debug:
+        var: login_status.stdout_lines
+      when:
+        - not ansible_check_mode
+        - login_status is not skipped
