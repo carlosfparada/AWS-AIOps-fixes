@@ -1,0 +1,37 @@
+---
+- name: Remediate %AAA-6-USER_PRIVILEGE_UPDATE - remove unauthorized privileged local user
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+  tasks:
+    - name: Assert every required variable is defined, non-empty and does not target a protected account
+      ansible.builtin.assert:
+        that:
+          - host_name is defined and host_name | string | length > 0
+          - user_name is defined and user_name | string | length > 0
+          - user_name | string | lower not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "Refusing to run: host_name and user_name must be defined and non-empty, and user_name must not be a protected management account."
+        success_msg: "Input validation passed."
+
+    - name: Remove the unauthorized local user reported by the AAA privilege update alert
+      cisco.ios.ios_user:
+        name: "{{ user_name }}"
+        state: absent
+      register: user_removal
+
+    - name: Verify the user is no longer present in the running configuration (read-only)
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ user_name }}"
+      register: verify_user
+      failed_when: false
+      changed_when: false
+
+    - name: Report remediation result
+      ansible.builtin.debug:
+        msg:
+          - "Remediation of AAA-6-USER_PRIVILEGE_UPDATE on {{ host_name }} finished."
+          - "Removal of user '{{ user_name }}' reported changed: {{ user_removal.changed | default(false) }}"
+          - "Post-change configuration check output: {{ verify_user.stdout | default(['no output']) | first }}"
