@@ -1,0 +1,48 @@
+---
+- name: Remediate Cisco IOS AAA user privilege escalation
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+
+  tasks:
+    - name: Assert required variables are defined, non-empty and not protected
+      ansible.builtin.assert:
+        that:
+          - "host_name is defined"
+          - "host_name | length > 0"
+          - "user_name is defined"
+          - "user_name | length > 0"
+          - "user_name | lower not in ['admin', 'ansible', 'ansible_user']"
+        fail_msg: "Required variables are missing or a protected account was targeted"
+        quiet: true
+
+    - name: Demote the escalated user to privilege level 1
+      cisco.ios.ios_config:
+        lines:
+          - "username {{ user_name }} privilege 1"
+      register: demote_result
+
+    - name: Read back the user configuration (read-only)
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ user_name }}"
+      register: verify_result
+      failed_when: false
+      changed_when: false
+
+    - name: Report remediation summary
+      ansible.builtin.debug:
+        msg:
+          - "Device {{ host_name }}: user '{{ user_name }}' escalated to priv-15 was demoted"
+          - "Change applied on device: {{ demote_result.changed | default(false) }}"
+          - "Running config line: {{ verify_result.stdout[0] | default('no output') }}"
+
+    - name: Verify the user no longer holds privilege 15
+      ansible.builtin.assert:
+        that:
+          - "verify_result.stdout[0] is defined"
+          - "ansible_check_mode or 'privilege 15' not in (verify_result.stdout[0] | default(''))"
+        fail_msg: "Remediation failed: user still holds privilege 15"
+        success_msg: "Remediation succeeded: user no longer holds privilege 15"
