@@ -1,0 +1,35 @@
+---
+- name: Remediate AAA-6-USER_PRIVILEGE_UPDATE privilege escalation
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+
+  tasks:
+    - name: Assert rogue_user is defined, non-empty, and not a protected account
+      ansible.builtin.assert:
+        that:
+          - rogue_user is defined
+          - rogue_user | string | length > 0
+          - rogue_user not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "rogue_user must be defined, non-empty, and not admin/ansible/ansible_user"
+        success_msg: "rogue_user validated"
+
+    - name: Downgrade local user privilege from 15 to 1 (idempotent)
+      cisco.ios.ios_user:
+        name: "{{ rogue_user }}"
+        privilege: 1
+      register: demote_user
+
+    - name: Verify running-config shows downgraded privilege
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ rogue_user }}"
+      register: verify_privilege
+      failed_when: false
+      changed_when: false
+
+    - name: Display verification output
+      ansible.builtin.debug:
+        var: verify_privilege.stdout_lines
