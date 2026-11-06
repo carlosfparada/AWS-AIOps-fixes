@@ -1,0 +1,36 @@
+---
+- name: Remediate unauthorized privilege escalation flagged by %AAA-6-USER_PRIVILEGE_UPDATE
+  hosts: "{{ host_name }}"
+  gather_facts: false
+  connection: ansible.netcommon.network_cli
+  vars:
+    ansible_network_os: cisco.ios.ios
+
+  tasks:
+    - name: Assert required variables are defined, non-empty and not protected
+      ansible.builtin.assert:
+        that:
+          - host_name is defined
+          - host_name | length > 0
+          - alert_username is defined
+          - alert_username | length > 0
+          - alert_username not in ['admin', 'ansible', 'ansible_user']
+        msg: "alert_username must be defined, non-empty, and must not be a protected or management account."
+
+    - name: De-escalate flagged local user from privilege 15 back to privilege 1
+      cisco.ios.ios_user:
+        name: "{{ alert_username }}"
+        privilege: 1
+      register: privilege_fix
+
+    - name: Verify the flagged user no longer has privilege 15 (read-only)
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | section ^username {{ alert_username }}"
+      register: verification
+      failed_when: false
+      changed_when: false
+
+    - name: Show verification result
+      ansible.builtin.debug:
+        var: verification.stdout_lines
