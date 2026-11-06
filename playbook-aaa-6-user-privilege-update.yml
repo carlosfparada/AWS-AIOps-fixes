@@ -1,0 +1,47 @@
+---
+- name: Remediate %AAA-6-USER_PRIVILEGE_UPDATE - demote rogue privilege escalation
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+
+  tasks:
+    - name: Assert rogue_user is defined, non-empty and not protected
+      ansible.builtin.assert:
+        that:
+          - rogue_user is defined
+          - rogue_user | string | trim | length > 0
+          - (rogue_user | string | trim) not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "rogue_user must be defined, non-empty, and not a protected account"
+        success_msg: "rogue_user validated"
+
+    - name: Demote rogue user privilege level back to user EXEC (1)
+      cisco.ios.ios_user:
+        name: "{{ rogue_user | string | trim }}"
+        privilege: 1
+        state: present
+        update_password: on_create
+      register: privilege_fix
+
+    - name: Read current user configuration for verification (read-only)
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ rogue_user | string | trim }}"
+      register: user_config
+      failed_when: false
+      changed_when: false
+
+    - name: Verify rogue user no longer holds privilege 15
+      ansible.builtin.assert:
+        that:
+          - "'privilege 15' not in (user_config.stdout[0] | default(''))"
+        fail_msg: "rogue_user still has privilege 15 configured on the device"
+        success_msg: "rogue_user privilege level remediated"
+      when: not ansible_check_mode
+
+    - name: Report remediation result
+      ansible.builtin.debug:
+        msg: >-
+          rogue_user privilege demoted to level 1 on {{ host_name }};
+          changed: {{ privilege_fix.changed | default(false) }}
