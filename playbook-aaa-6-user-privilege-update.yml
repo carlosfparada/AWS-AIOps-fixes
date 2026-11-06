@@ -1,0 +1,45 @@
+---
+- name: Revoke privilege 15 granted to rogue user (AAA-6-USER_PRIVILEGE_UPDATE)
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+  tasks:
+    - name: Assert rogue_user is defined, non-empty and not a protected account
+      ansible.builtin.assert:
+        that:
+          - rogue_user is defined
+          - rogue_user | string | length > 0
+          - rogue_user | string | lower not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "rogue_user must be defined, non-empty, and not admin/ansible/ansible_user"
+        success_msg: "rogue_user variable checks passed"
+
+    - name: Read current configuration entry for the rogue user
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ rogue_user }}"
+      register: rogue_user_before
+
+    - name: Demote rogue user from privilege 15 to privilege 1 when locally configured
+      cisco.ios.ios_user:
+        config:
+          - name: "{{ rogue_user }}"
+            privilege: 1
+        state: merged
+      when: "'username ' ~ rogue_user ~ ' ' in rogue_user_before.stdout[0]"
+
+    - name: Verify privilege level of the rogue user after remediation
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ rogue_user }}"
+      register: rogue_user_after
+      failed_when: false
+      changed_when: false
+
+    - name: Report remediation result
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Privilege 15 still present for ' ~ rogue_user ~ '; manual review required'
+             if 'privilege 15' in rogue_user_after.stdout[0]
+             else 'No privilege 15 found for ' ~ rogue_user ~ ' after remediation' }}
