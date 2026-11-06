@@ -1,0 +1,35 @@
+---
+- name: Remediate %AAA-6-USER_PRIVILEGE_UPDATE - remove rogue privileged local user
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+  tasks:
+    - name: Validate rogue_user before making changes
+      ansible.builtin.assert:
+        that:
+          - rogue_user is defined
+          - rogue_user | length > 0
+          - rogue_user not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "rogue_user must be defined, non-empty, and not a protected account"
+
+    - name: Remove rogue local user account from device
+      cisco.ios.ios_user:
+        name: "{{ rogue_user }}"
+        state: absent
+      register: remove_user_result
+
+    - name: Verify rogue user is no longer configured (read-only)
+      cisco.ios.ios_command:
+        commands:
+          - show running-config | include username {{ rogue_user }}
+      register: verify_user_removed
+      failed_when: false
+      changed_when: false
+
+    - name: Report remediation status
+      ansible.builtin.debug:
+        msg: >-
+          Removal changed state: {{ remove_user_result.changed }};
+          verification output for {{ rogue_user }}: {{ verify_user_removed.stdout | default(['no output']) | join(' | ') }}
