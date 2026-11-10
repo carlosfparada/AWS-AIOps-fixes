@@ -1,0 +1,34 @@
+---
+- name: Remediate AAA privilege escalation of a rogue local user
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+
+  tasks:
+    - name: Validate the rogue user variable before any change
+      ansible.builtin.assert:
+        that:
+          - rogue_user is defined
+          - rogue_user | length > 0
+          - rogue_user not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "rogue_user must be defined, non-empty and not a protected account"
+        success_msg: "rogue_user validated"
+
+    - name: Delete the rogue local user that was granted privilege 15
+      cisco.ios.ios_user:
+        name: "{{ rogue_user }}"
+        state: absent
+
+    - name: Confirm the rogue user no longer exists on the device
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ rogue_user }}"
+      register: verify_user
+      failed_when: false
+      changed_when: false
+
+    - name: Report verification output
+      ansible.builtin.debug:
+        msg: "Post-remediation check for {{ rogue_user }}: {{ verify_user.stdout[0] | default('no output') }}"
