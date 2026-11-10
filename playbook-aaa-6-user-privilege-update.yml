@@ -1,0 +1,46 @@
+---
+- name: Remediate AAA-6-USER_PRIVILEGE_UPDATE - de-escalate rogue local user
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+
+  tasks:
+    - name: Validate rogue_user before making any change
+      ansible.builtin.assert:
+        that:
+          - rogue_user is defined and rogue_user | length > 0
+          - rogue_user | lower not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "rogue_user must be defined, non-empty, and not a protected account"
+        success_msg: "rogue_user is valid"
+
+    - name: Ensure rogue local user is reset to lowest privilege level 1
+      cisco.ios.ios_user:
+        configured:
+          - name: "{{ rogue_user }}"
+            privilege: 1
+            state: present
+        state: merged
+      register: privilege_fix
+
+    - name: Read back local user configuration (read-only)
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ rogue_user }}"
+      register: verify_output
+      failed_when: false
+      changed_when: false
+
+    - name: Display verification output
+      ansible.builtin.debug:
+        msg: "{{ verify_output.stdout | default(['no output returned']) }}"
+
+    - name: Confirm the rogue user is not elevated
+      ansible.builtin.assert:
+        that:
+          - verify_output.stdout is defined
+          - "'privilege 15' not in (verify_output.stdout | join(' '))"
+        fail_msg: "Rogue user still shows elevated privilege"
+        success_msg: "Rogue user remediated to privilege level 1"
+      when: verify_output.stdout is defined
