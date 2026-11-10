@@ -1,0 +1,35 @@
+---
+- name: Remediate %AAA-6-USER_PRIVILEGE_UPDATE unauthorized privilege escalation
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - rogue_user is defined
+          - rogue_user | string | length > 0
+          - rogue_user not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "rogue_user must be defined, non-empty, and not a protected account"
+        success_msg: "rogue_user is valid and safe to remediate"
+
+    - name: Remove backdoor user account from the local user database
+      cisco.ios.ios_user:
+        name: "{{ rogue_user }}"
+        state: absent
+
+    - name: Verify the backdoor user no longer exists (read-only)
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include username {{ rogue_user }}"
+      register: verify_user_removed
+      failed_when: false
+      changed_when: false
+
+    - name: Report remediation result
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'WARNING: user ' ~ rogue_user ~ ' still present on device: ' ~ (verify_user_removed.stdout[0] | default('')) if rogue_user in (verify_user_removed.stdout[0] | default(''))
+             else 'User ' ~ rogue_user ~ ' successfully removed from device' }}
