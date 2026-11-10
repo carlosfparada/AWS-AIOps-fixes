@@ -1,0 +1,37 @@
+---
+- name: Remove rogue priv-15 user reported by AAA-6-USER_PRIVILEGE_UPDATE
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+
+  tasks:
+    - name: Validate rogue_user variable before making any change
+      ansible.builtin.assert:
+        that:
+          - rogue_user is defined
+          - rogue_user | length > 0
+          - rogue_user not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "rogue_user must be defined, non-empty, and not a protected account"
+        success_msg: "rogue_user is safe to operate on"
+
+    - name: Remove the rogue user account from the target device
+      cisco.ios.ios_user:
+        name: "{{ rogue_user }}"
+        state: absent
+
+    - name: Read device config to verify the rogue user is gone
+      cisco.ios.ios_command:
+        commands:
+          - show running-config | include username {{ rogue_user }}
+      register: verify_output
+      failed_when: false
+      changed_when: false
+
+    - name: Confirm the rogue user no longer exists on the device
+      ansible.builtin.assert:
+        that:
+          - verify_output.stdout[0] is not search('username ' ~ rogue_user)
+        fail_msg: "Rogue user {{ rogue_user }} is still present on the device"
+        success_msg: "Rogue user {{ rogue_user }} successfully removed"
