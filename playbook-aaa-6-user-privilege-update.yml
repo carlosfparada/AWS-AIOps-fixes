@@ -1,0 +1,37 @@
+---
+- name: Remove unauthorized privileged user reported by %AAA-6-USER_PRIVILEGE_UPDATE
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+
+  tasks:
+    - name: Validate rogue_user input variable
+      ansible.builtin.assert:
+        that:
+          - rogue_user is defined
+          - rogue_user | length > 0
+          - rogue_user not in ['admin', 'ansible', 'ansible_user']
+        fail_msg: "rogue_user must be defined, non-empty, and not a protected account"
+        success_msg: "rogue_user validated"
+
+    - name: Ensure the unauthorized privileged user is deleted and cannot persist
+      cisco.ios.ios_user:
+        name: "{{ rogue_user }}"
+        state: absent
+
+    - name: Verify the user is no longer configured (read-only)
+      cisco.ios.ios_command:
+        commands:
+          - show running-config | include username {{ rogue_user }}
+      register: user_verification
+      changed_when: false
+      failed_when: false
+
+    - name: Report verification result
+      ansible.builtin.debug:
+        msg:
+          - "Verification on {{ host_name }} complete"
+          - "Read-only output: {{ user_verification.stdout_lines | default([]) }}"
+          - "If output is empty, {{ rogue_user }} is no longer configured"
