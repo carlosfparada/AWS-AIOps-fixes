@@ -1,0 +1,28 @@
+---
+- name: Remove unauthorized privileged user detected in Cisco IOS log
+  hosts: "{{ host_name }}"
+  connection: ansible.netcommon.network_cli
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+  tasks:
+    - name: Assert rogue_user is defined, non-empty, and not a protected account
+      ansible.builtin.assert:
+        that:
+          - rogue_user is defined
+          - rogue_user | length > 0
+          - rogue_user not in ['admin', 'ansible', 'ec2-user', 'ansible_user']
+        msg: "rogue_user must be defined, non-empty, and not one of the protected accounts"
+
+    - name: Remove the unauthorized privileged user
+      cisco.ios.ios_user:
+        name: "{{ rogue_user }}"
+        state: absent
+
+    - name: Verify the user no longer exists in the running configuration
+      cisco.ios.ios_command:
+        commands:
+          - "show running-config | include ^username {{ rogue_user }}"
+      register: verify_rogue_user_removed
+      failed_when: false
+      changed_when: false
